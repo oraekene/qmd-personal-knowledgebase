@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+*.egg-info/
+dist/
+build/
+
+# QMD
+.qmd/
+corpus/.qmd/
+*.qmd.db
+*.qmd-embed*
+
+# Corpus - keep structure but ignore large generated artifacts if needed
+# Uncomment to ignore actual corpus data (keep in repo for now)
+# corpus/
+
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Secrets / tokens
+*_token.txt
+mirror-token.txt
+*.pem
+.secrets/
+
+# Inbox (local drops, don't commit large exports)
+inbox/
+tmp/
+temp/
+
+# Cloned templates - vendor clones, ignored for now (re-add as submodules or vendor/ if needed)
+# To keep a template, remove its line and commit intentionally
+qmd-main/
+liteparse-main/
+llm-wiki-compiler-main/
+composio-next/
+Scrapling-main/
+searxng-master/
+tinyfish-cookbook-main/
+
+# Logs
+*.log
+orchestrator.log
