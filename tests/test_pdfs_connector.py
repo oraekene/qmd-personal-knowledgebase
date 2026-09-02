@@ -28,7 +28,7 @@ def test_pdfs_connector_yields_units_with_page_separators(tmp_path_factory=None)
             # Simulate LiteParse output: pages joined by \n\n-----\n\n
             return "Page 1 content\n\n-----\n\nPage 2 content"
 
-        connector = PdfsConnector(inbox_dir=inbox, corpus_root=corpus, parse_func=mock_parse)
+        connector = PdfsConnector(inbox_dir=inbox, parse_func=mock_parse)
         payloads = list(connector.fetch_recent(datetime(2025, 1, 1, tzinfo=timezone.utc)))
         assert len(payloads) == 1
         p = payloads[0]
@@ -76,7 +76,7 @@ def test_pdfs_connector_handles_scanned_pdf_fallback():
             # For #17, the connector should still yield a Unit, even if scanned
             return "Scanned page content after OCR\n\n-----\n\nSecond scanned page"
 
-        connector = PdfsConnector(inbox_dir=inbox, corpus_root=corpus, parse_func=mock_parse_scanned)
+        connector = PdfsConnector(inbox_dir=inbox, parse_func=mock_parse_scanned)
         payloads = list(connector.fetch_recent(datetime(2025, 1, 1, tzinfo=timezone.utc)))
         assert len(payloads) == 1
         p = payloads[0]
@@ -103,7 +103,7 @@ def test_pdfs_connector_continue_on_page_error():
             # The connector should still yield a Unit with partial content
             return "Page 1 ok\n\n-----\n\n[Page 3 skipped due to error]"
 
-        connector = PdfsConnector(inbox_dir=inbox, corpus_root=corpus, parse_func=mock_parse_partial)
+        connector = PdfsConnector(inbox_dir=inbox, parse_func=mock_parse_partial)
         payloads = list(connector.fetch_recent(datetime(2025, 1, 1, tzinfo=timezone.utc)))
         assert len(payloads) == 1
         assert "Page 1" in payloads[0].body_markdown
@@ -130,7 +130,7 @@ def test_pdfs_connector_dedup_via_content_hash():
         def mock_parse_same(pdf_path: pathlib.Path) -> str:
             return "Same content for both"
 
-        connector = PdfsConnector(inbox_dir=inbox, corpus_root=corpus, parse_func=mock_parse_same)
+        connector = PdfsConnector(inbox_dir=inbox, parse_func=mock_parse_same)
         # First run should yield 2 (both PDFs), but writer dedup via content_hash should handle second run
         # For connector, we just test that it yields both, and the orchestrator/writer will dedup via file existence
         payloads = list(connector.fetch_recent(datetime(2025, 1, 1, tzinfo=timezone.utc)))

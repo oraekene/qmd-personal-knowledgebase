@@ -46,12 +46,10 @@ class PdfsConnector(SourcePlugin):
     def __init__(
         self,
         inbox_dir: Path | str | None = None,
-        corpus_root: Path | str | None = None,
         parse_func: Callable[[Path], str] | None = None,
     ):
         super().__init__()
         self.inbox_dir = Path(inbox_dir) if inbox_dir else Path("inbox/pdfs")
-        self.corpus_root = Path(corpus_root) if corpus_root else Path("corpus")
         self.parse_func = parse_func  # For testing, inject mock that returns markdown
 
     def _default_parse(self, pdf_path: Path) -> str:

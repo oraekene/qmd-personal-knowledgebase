@@ -44,6 +44,30 @@ def _hash_url(url: str) -> str:
     return hashlib.blake2b(url.encode("utf-8"), digest_size=8).hexdigest()
 
 
+def _payload_from_text(url: str, text: str, source: str = "web", silo: str = "web") -> UnitPayload:
+    # Helper to avoid duplicated UnitPayload construction for TinyFish vs Scrapling
+    source_id = _hash_url(url)
+    summary = text.strip().split("\n")[0][:120].strip()
+    if len(summary) > 120:
+        summary = summary[:120] + "..."
+    if summary and summary[-1] not in ".!?":
+        summary += "."
+    if not summary:
+        summary = f"Fetched {url}."
+    return UnitPayload(
+        source=source,
+        silo=silo,
+        source_id=source_id,
+        url=url,
+        created_at=datetime.now(timezone.utc).isoformat(),
+        tags=["web"],
+        author="",
+        title=url,
+        summary=summary,
+        body_markdown=text,
+    )
+
+
 class WebConnector(SourcePlugin):
     """Link expansion connector — scans corpus for new Units, fetches links."""
 
@@ -102,9 +126,14 @@ class WebConnector(SourcePlugin):
         # Collect links from all corpus Units (excluding web itself to avoid recursion)
         all_links: list[str] = []
         for unit_path in sorted(self.corpus_root.rglob("*.md")):
-            # Skip web silo itself (one-level, no recursion)
-            if "web" in unit_path.parts:
-                continue
+            # Skip web silo itself (one-level, no recursion) — use is_relative_to for exact match
+            try:
+                if unit_path.is_relative_to(self.corpus_root / "web"):
+                    continue
+            except AttributeError:
+                # Fallback for older Python
+                if "web" in unit_path.parts and (self.corpus_root / "web") in unit_path.parents:
+                    continue
             if "_state" in unit_path.parts or ".qmd" in unit_path.parts:
                 continue
             try:
@@ -149,36 +178,14 @@ class WebConnector(SourcePlugin):
                     continue
                 text = res.get("text") or ""
                 if not text.strip():
-                    # If TinyFish returned empty, try Scrapling fallback
                     text = scrapling_fetch(url)
                 final_url = res.get("final_url") or url
-                # Create payload
                 source_id = _hash_url(final_url)
-                # Check if web Unit already exists for this URL (dedupe)
-                web_file = web_dir / f"{source_id}.md"
-                if web_file.exists():
+                if (web_dir / f"{source_id}.md").exists():
                     continue
-                # Summary from fetched content first line
-                summary = text.strip().split("\n")[0][:120].strip()
-                if len(summary) > 120:
-                    summary = summary[:120] + "..."
-                if summary and summary[-1] not in ".!?":
-                    summary += "."
-                if not summary:
-                    summary = f"Fetched {final_url}."
-
-                payload = UnitPayload(
-                    source=self.NAME,
-                    silo="web",
-                    source_id=source_id,
-                    url=final_url,
-                    created_at=datetime.now(timezone.utc).isoformat(),
-                    tags=["web"],
-                    author="",
-                    title=final_url,
-                    summary=summary,
-                    body_markdown=text,
-                )
+                payload = _payload_from_text(final_url, text)
+                payload.source_id = source_id  # ensure hash consistency
+                payload.url = final_url
                 already_fetched.add(final_url)
                 already_fetched.add(url)
                 count += 1
@@ -191,7 +198,6 @@ class WebConnector(SourcePlugin):
                 url = err.get("url")
                 if not url or url in already_fetched:
                     continue
-                # Try Scrapling fallback
                 try:
                     text = scrapling_fetch(url)
                 except Exception:
@@ -199,29 +205,11 @@ class WebConnector(SourcePlugin):
                 if not text or not text.strip():
                     continue
                 source_id = _hash_url(url)
-                web_file = web_dir / f"{source_id}.md"
-                if web_file.exists():
+                if (web_dir / f"{source_id}.md").exists():
                     continue
-                summary = text.strip().split("\n")[0][:120].strip()
-                if len(summary) > 120:
-                    summary = summary[:120] + "..."
-                if summary and summary[-1] not in ".!?":
-                    summary += "."
-                if not summary:
-                    summary = f"Fetched {url} via Scrapling."
-
-                payload = UnitPayload(
-                    source=self.NAME,
-                    silo="web",
-                    source_id=source_id,
-                    url=url,
-                    created_at=datetime.now(timezone.utc).isoformat(),
-                    tags=["web"],
-                    author="",
-                    title=url,
-                    summary=summary,
-                    body_markdown=text,
-                )
+                payload = _payload_from_text(url, text)
+                payload.source_id = source_id
+                payload.url = url
                 already_fetched.add(url)
                 count += 1
                 yield payload
