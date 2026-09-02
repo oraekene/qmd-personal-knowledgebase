@@ -16,7 +16,7 @@ def test_example_connector_yields_unit_and_writer_persists():
     p = payloads[0]
     assert p.source == "example_github"
     assert p.silo == "github"
-    assert p.source_id == "oraekene__nebula"
+    assert p.source_id == "oraekene/nebula"
     assert p.summary
     assert p.title == "Nebula"
 

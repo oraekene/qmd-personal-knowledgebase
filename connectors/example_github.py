@@ -31,7 +31,7 @@ class ExampleGithubConnector(SourcePlugin):
         yield UnitPayload(
             source=self.NAME,
             silo="github",
-            source_id="oraekene__nebula",
+            source_id="oraekene/nebula",
             url="https://github.com/oraekene/nebula",
             created_at=fake_created.isoformat(),
             tags=["python", "example"],

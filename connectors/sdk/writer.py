@@ -19,12 +19,12 @@ from .base import UnitPayload
 
 def safe_filename(source_id: str) -> str:
     # Prior art: github_extractor_v2.py:165 safe_filename, platform_extractor.py:109
-    # Replace path separators and Windows-unsafe chars; keep spaces for now (test allows either)
+    # Replace path separators and Windows-unsafe chars; normalize spaces to _ for portability
     s = source_id.replace("/", "__").replace("\\", "__")
     # Replace Windows-unsafe: :*?"<>|  -> _
     s = re.sub(r'[:*?"<>|]', "_", s)
-    # Collapse consecutive underscores from __ already
-    # Keep spaces as-is or replace with _ — test allows either, keep as-is for readability
+    # Normalize spaces to _ for QMD glob portability (was keep-as-is, now strict)
+    s = s.replace(" ", "_")
     # Strip leading/trailing whitespace/dot
     s = s.strip().strip(".")
     if not s:
@@ -59,21 +59,19 @@ def _quote_yaml_value(v: str | None) -> str:
 
 def _frontmatter_yaml(payload: UnitPayload, content_hash: str, ingested_at: str) -> str:
     # Manual YAML to avoid pyyaml dep; test checks via substring, not parse
-    q = _quote_yaml_value
-
     url = payload.url or ""
     author = payload.author or ""
     tags_str = _format_tags(payload.tags)
     lines = [
         "---",
-        f"source: {q(payload.source)}",
-        f"silo: {q(payload.silo)}",
-        f"source_id: {q(payload.source_id)}",
-        f"url: {q(url)}",
-        f"created_at: {q(payload.created_at or '')}",
-        f"ingested_at: {q(ingested_at)}",
+        f"source: {_quote_yaml_value(payload.source)}",
+        f"silo: {_quote_yaml_value(payload.silo)}",
+        f"source_id: {_quote_yaml_value(payload.source_id)}",
+        f"url: {_quote_yaml_value(url)}",
+        f"created_at: {_quote_yaml_value(payload.created_at or '')}",
+        f"ingested_at: {_quote_yaml_value(ingested_at)}",
         f"tags: {tags_str}",
-        f"author: {q(author)}",
+        f"author: {_quote_yaml_value(author)}",
         f"content_hash: {content_hash}",
         "---",
     ]
@@ -100,8 +98,17 @@ def write_unit(payload: UnitPayload, corpus_root: Path) -> Path:
     if not payload.body_markdown or not payload.body_markdown.strip():
         raise ValueError("body_markdown required")
 
-    # Compute content_hash over summary + body_markdown (blake3 64 hex, fallback blake2b)
-    hash_input = f"{summary}\n{payload.body_markdown}".encode("utf-8")
+    # Build body first (Summary Line + heading + content) so hash is over final file body
+    body_md = payload.body_markdown.lstrip("\n")
+    if not body_md.lstrip().startswith("#"):
+        # Prepend title as heading if missing (spec: title derived from first heading)
+        body_md = f"# {payload.title}\n\n{body_md}"
+    body = f"> {summary}\n\n{body_md}"
+    if not body.endswith("\n"):
+        body += "\n"
+
+    # Compute content_hash over final body (blake3 64 hex, fallback blake2b) — file content, not payload slice
+    hash_input = body.encode("utf-8")
     try:
         import blake3  # type: ignore
 
@@ -110,7 +117,6 @@ def write_unit(payload: UnitPayload, corpus_root: Path) -> Path:
         content_hash = hashlib.blake2b(hash_input, digest_size=32).hexdigest()
 
     # Prepare output path: corpus/<silo>/<safe_source_id>.md
-    # silo may contain slash for subpath e.g. chats/claude
     safe = safe_filename(payload.source_id)
     out_path = corpus_root / payload.silo / f"{safe}.md"
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -118,18 +124,6 @@ def write_unit(payload: UnitPayload, corpus_root: Path) -> Path:
     ingested_at = datetime.now(timezone.utc).isoformat()
 
     fm = _frontmatter_yaml(payload, content_hash, ingested_at)
-
-    # Body: Summary Line blockquote + blank line + body_markdown (which already starts with # heading)
-    # Ensure body_markdown starts with heading; if payload.title not in body, prepend it
-    body_md = payload.body_markdown.lstrip("\n")
-    if not body_md.lstrip().startswith("#"):
-        # Prepend title as heading
-        body_md = f"# {payload.title}\n\n{body_md}"
-    # Summary Line blockquote
-    body = f"> {summary}\n\n{body_md}"
-    # Ensure ends with newline
-    if not body.endswith("\n"):
-        body += "\n"
 
     full = f"{fm}\n{body}"
 

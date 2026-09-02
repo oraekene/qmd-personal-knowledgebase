@@ -15,17 +15,22 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Iterator, List, Set
 
+import logging
+
 from connectors.sdk.base import SourcePlugin, UnitPayload
+
+logger = logging.getLogger(__name__)
 
 
 def dedupe_by_source_id(payloads: List[UnitPayload], seen: Set[str] | None = None) -> List[UnitPayload]:
-    """First-seen-wins dedup on source_id.lower() (repo full_name)."""
+    """First-seen-wins dedup on source_id.lower() (repo full_name). Logs skips."""
     if seen is None:
         seen = set()
     out: List[UnitPayload] = []
     for p in payloads:
         key = p.source_id.lower()
         if key in seen:
+            logger.info("Skipping duplicate repo %s (first-seen-wins)", p.source_id)
             continue
         seen.add(key)
         out.append(p)
