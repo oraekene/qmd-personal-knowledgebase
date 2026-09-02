@@ -3,10 +3,10 @@
 Per #16 + spec.md:109-111 + #9 per-silo templates + ADR-0007 (no connector split, QMD 900/135 chunks):
 - Inbox: inbox/ ZIPs (claude, chatgpt, gemini, qwen, zai, deepseek exports) unpacked by normalizer
 - Each ZIP contains one JSON per session: {id, platform, created_at, messages: [{role, content}]}
-- One Unit per session, whole-session, alternating speaker sections, no split
+- One Unit per session, whole-session, alternating speaker sections as headings, no split
 - Silo: chats/{platform}, source: chats, source_id: session id, url: "", created_at: session created_at
 - Summary Line: first user message truncated to one sentence
-- Body: alternating sections, e.g. "User:\ncontent\n\nAssistant:\ncontent"
+- Body: alternating sections with markdown headings (## User / ## Assistant) for AST-aware chunking
 
 This is the production connector for #16 — fixture-testable, no live API.
 """
@@ -19,12 +19,11 @@ from typing import Iterator
 
 from connectors.sdk.base import SourcePlugin, UnitPayload
 
-# Supported platforms — per spec.md:109 + #9 Sils
+# Supported platforms — per spec.md:109 + #9 Silos
 SUPPORTED_PLATFORMS = {"claude", "chatgpt", "gemini", "qwen", "zai", "deepseek"}
 
 
 def _platform_from_zip_name(zip_name: str) -> str | None:
-    # e.g. claude-export.zip -> claude, chatgpt-export.zip -> chatgpt
     lower = zip_name.lower()
     for plat in SUPPORTED_PLATFORMS:
         if plat in lower:
@@ -33,37 +32,44 @@ def _platform_from_zip_name(zip_name: str) -> str | None:
 
 
 def _summary_from_messages(messages: list[dict]) -> str:
-    # First user message, truncated to one sentence (up to . ! ? or 120 chars)
     for msg in messages:
         if msg.get("role") == "user" and msg.get("content"):
             content = msg["content"].strip().replace("\n", " ")
-            # Take first sentence
             for sep in [". ", "! ", "? "]:
                 if sep in content:
                     content = content.split(sep)[0] + sep.strip()
                     break
-            # Truncate
             if len(content) > 120:
                 content = content[:120].rstrip() + "..."
-            # Ensure ends with period if not
             if content and content[-1] not in ".!?":
                 content += "."
             return content
-    # Fallback: first message
     if messages:
         return messages[0].get("content", "")[:120]
     return "Chat session."
 
 
+def _title_from_messages(messages: list[dict], sess_id: str) -> str:
+    # Title derived from first user prompt (per Spec review: not sess_id), fallback to sess_id
+    for msg in messages:
+        if msg.get("role") == "user" and msg.get("content"):
+            content = msg["content"].strip().replace("\n", " ")
+            # Take first 60 chars of first user message as title
+            title = content[:60].strip()
+            if len(content) > 60:
+                title = title.rstrip() + "..."
+            return title
+    return sess_id
+
+
 def _body_from_messages(messages: list[dict], title: str) -> str:
-    # Alternating speaker sections, whole-session, no split
-    # Per #9: chat session Units alternate speaker sections and are written as one file per session
+    # Alternating speaker sections as markdown headings for AST-aware chunking (## User / ## Assistant)
+    # Per Spec review: was **User:** bold, now heading for better chunk boundaries
     parts = [f"# {title}\n"]
     for msg in messages:
         role = msg.get("role", "unknown").capitalize()
         content = msg.get("content", "")
-        # Use role as heading or bold? Use "User:" / "Assistant:" sections
-        parts.append(f"**{role}:**\n\n{content}\n")
+        parts.append(f"## {role}\n\n{content}\n")
     return "\n".join(parts)
 
 
@@ -74,28 +80,21 @@ class ChatsConnector(SourcePlugin):
     DESCRIPTION = "Chat exports from 6 platforms via inbox ZIPs"
     REQUIRES_AUTH = False
     SUPPORTS_LOOKBACK = False
-    DEFAULT_CONFIG: dict = {}
 
-    def __init__(self, inbox_dir: Path | str | None = None, corpus_root: Path | str | None = None):
+    def __init__(self, inbox_dir: Path | str | None = None):
         super().__init__()
-        # Inbox is watched folder where manual export drops land (per CONTEXT.md Inbox)
         self.inbox_dir = Path(inbox_dir) if inbox_dir else Path("inbox")
-        self.corpus_root = Path(corpus_root) if corpus_root else Path("corpus")
 
     def fetch_recent(self, since: datetime, limit: int = 50) -> Iterator[UnitPayload]:
-        # Scan inbox for ZIPs
         if not self.inbox_dir.exists():
             return
-        # Ensure since is timezone-aware
         if since.tzinfo is None:
             since = since.replace(tzinfo=timezone.utc)
 
         count = 0
-        # Sort ZIPs for deterministic order
         for zip_path in sorted(self.inbox_dir.glob("*.zip")):
             if count >= limit:
                 break
-            # Determine platform from ZIP name as fallback
             zip_platform = _platform_from_zip_name(zip_path.name)
             try:
                 with zipfile.ZipFile(zip_path, "r") as zf:
@@ -111,15 +110,16 @@ class ChatsConnector(SourcePlugin):
                             sess = json.loads(data.decode("utf-8"))
                         except Exception:
                             continue
-                        # Validate session
                         sess_id = sess.get("id")
                         if not sess_id:
                             continue
-                        platform = sess.get("platform") or zip_platform or "claude"
-                        # Only handle supported platforms, but allow any for test
+                        platform = sess.get("platform") or zip_platform
+                        if not platform:
+                            continue
+                        platform = platform.lower()
                         if platform not in SUPPORTED_PLATFORMS:
-                            # Still allow, but normalize to lower
-                            platform = platform.lower()
+                            # Skip unknown platforms instead of misattributing to claude
+                            continue
                         created_at_str = sess.get("created_at") or "2026-09-01T00:00:00+00:00"
                         try:
                             created_at = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
@@ -127,17 +127,13 @@ class ChatsConnector(SourcePlugin):
                                 created_at = created_at.replace(tzinfo=timezone.utc)
                         except Exception:
                             created_at = datetime.now(timezone.utc)
-                        # Respect since (only yield if created_at > since)
                         if created_at <= since:
                             continue
                         messages = sess.get("messages") or []
-                        # Skip empty sessions
                         if not messages:
                             continue
                         summary = _summary_from_messages(messages)
-                        title = sess_id
-                        # Try to derive title from first user message if available
-                        # Use sess_id as title per spec (source_id is native ID)
+                        title = _title_from_messages(messages, sess_id)
                         body_markdown = _body_from_messages(messages, title)
 
                         payload = UnitPayload(
