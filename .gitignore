@@ -14,6 +14,7 @@ build/
 # QMD
 .qmd/
 corpus/.qmd/
+corpus/_state/
 *.qmd.db
 *.qmd-embed*
 
