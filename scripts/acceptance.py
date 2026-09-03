@@ -135,19 +135,92 @@ def run_mock() -> int:
     return 1 if failures else 0
 
 
+def _curl_json(url: str, token: str, timeout: int = 20) -> tuple[int, str]:
+    """POST tools/list to an MCP endpoint. Returns (status, body-snippet)."""
+    import json
+    import urllib.request
+
+    payload = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}).encode()
+    req = urllib.request.Request(url, data=payload, method="POST", headers={
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status, resp.read(500).decode(errors="replace")
+    except Exception as e:
+        code = getattr(e, "code", 0) or 0
+        return int(code), str(e)[:200]
+
+
+def _curl_get(url: str, timeout: int = 20) -> tuple[int, str]:
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            return resp.status, resp.read(2000).decode(errors="replace")
+    except Exception as e:
+        code = getattr(e, "code", 0) or 0
+        return int(code), str(e)[:200]
+
+
 def run_live() -> int:
-    missing = []
-    if shutil.which("qmd") is None and not pathlib.Path("qmd-main/package.json").exists():
-        missing.append("qmd (binary or qmd-main/)")
-    for env in ("TUNNEL_URL", "MIRROR_TOKEN"):
-        if not os.environ.get(env, "").strip():
-            missing.append(env)
-    print("live acceptance prerequisites: " + (", ".join(missing) if missing else "ok"))
-    if missing:
-        print("FAIL live — prerequisites missing (sleep/wake, Claude.ai web, fetch-tool need live stack). Run --mock for gate.")
-        return 2
-    print("TODO live: qmd update && embed 50 Units, time <5min, then 7 live checks. Not yet wired — see #21.")
-    return 2
+    import subprocess
+
+    failures, skips = 0, 0
+    t0 = time.time()
+    qmd_ok = shutil.which("qmd") is not None
+    tunnel_url = os.environ.get("TUNNEL_URL", "").strip()
+    proxy_token = os.environ.get("AUTH_PROXY_TOKEN", "").strip()
+    mirror_host = os.environ.get("MIRROR_HOST", "https://qmd-mirror.pages.dev").strip()
+    mirror_token = os.environ.get("MIRROR_TOKEN", "").strip()
+
+    # 1-2. qmd update && embed timing + OCR/scoping (live only with qmd binary)
+    if not qmd_ok:
+        print("SKIP live/qmd-embed-timing — qmd binary missing")
+        print("SKIP live/ocr-scoping — qmd binary missing")
+        skips += 2
+    else:
+        try:
+            r1 = subprocess.run(["qmd", "update"], capture_output=True, text=True, timeout=280)
+            r2 = subprocess.run(["qmd", "embed"], capture_output=True, text=True, timeout=280)
+            dt = time.time() - t0
+            if not _check("live/qmd-embed-timing", r1.returncode == 0 and r2.returncode == 0 and dt < 300, f"{dt:.0f}s"):
+                failures += 1
+            r3 = subprocess.run(["qmd", "query", "OCR models I selected", "--collection", "notes"],
+                                capture_output=True, text=True, timeout=60)
+            if not _check("live/ocr-scoping", r3.returncode == 0 and "ocr" in r3.stdout.lower(), "top hits"):
+                failures += 1
+        except Exception as e:
+            if not _check("live/qmd-stack", False, str(e)[:150]):
+                failures += 1
+
+    # 3. Tunnel MCP tools/list (sleep/wake recovery proof = 200 with correct token)
+    if not tunnel_url or not proxy_token:
+        print("SKIP live/tunnel-mcp — TUNNEL_URL/AUTH_PROXY_TOKEN not set")
+        skips += 1
+    else:
+        code, _ = _curl_json(tunnel_url, proxy_token)
+        if not _check("live/tunnel-mcp", code == 200, f"HTTP {code}"):
+            failures += 1
+
+    # 4. Mirror llms.txt fetch (token 200 + H1, root redacted)
+    if not mirror_token:
+        print("SKIP live/mirror-fetch — MIRROR_TOKEN not set")
+        skips += 1
+    else:
+        code, body = _curl_get(f"{mirror_host}/{mirror_token}/llms.txt")
+        ok = code == 200 and body.startswith("# Private Knowledgebase")
+        if not _check("live/mirror-fetch", ok, f"HTTP {code}"):
+            failures += 1
+
+    # 5. Claude.ai web connector — manual (config presence check only)
+    cfg = pathlib.Path("auth_proxy/claude-connector-verification.md")
+    print(f"SKIP live/claude-web — manual web-chat step; config present={cfg.exists()}")
+    skips += 1
+
+    print(f"live acceptance: {failures} FAIL, {skips} SKIP")
+    return 1 if failures else (2 if skips else 0)
 
 
 if __name__ == "__main__":
