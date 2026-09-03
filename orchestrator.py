@@ -31,8 +31,9 @@ def run_once(
     qmd_runner: Callable[[], int],
     wiki_runner: Callable[[], int],
     now: datetime | None = None,
+    mirror_runner: Callable[[], int] | None = None,
 ) -> None:
-    """Run one orchestrator cycle: connectors -> single qmd -> isolated wiki.
+    """Run one orchestrator cycle: connectors -> single qmd -> isolated wiki -> isolated mirror.
 
     - connectors: list of SourcePlugin-like objects with NAME and fetch_recent(since)
     - corpus_root: Path("corpus")
@@ -40,6 +41,7 @@ def run_once(
     - qmd_runner: callable that does `qmd update && qmd embed`, returns exit code
     - wiki_runner: callable that does `llmwiki compile --stale`, may raise
     - now: for testing, fixed now; otherwise datetime.now(timezone.utc)
+    - mirror_runner: callable that does `build_mirror + wrangler deploy`, may raise, isolated
     """
     if now is None:
         now = datetime.now(timezone.utc)
@@ -92,6 +94,13 @@ def run_once(
     except Exception as e:
         logger.error("Wiki synthesis failed (isolated): %s", e, exc_info=True)
 
+    # Isolated mirror build + deploy — failure does not block indexing
+    if mirror_runner is not None:
+        try:
+            mirror_runner()
+        except Exception as e:
+            logger.error("Mirror build/deploy failed (isolated): %s", e, exc_info=True)
+
 
 if __name__ == "__main__":
     import argparse
@@ -140,4 +149,47 @@ if __name__ == "__main__":
             raise RuntimeError(f"llmwiki compile failed {result.returncode}")
         return 0
 
-    run_once(connectors, corpus_root, state_path, qmd_runner, wiki_runner)
+    def mirror_runner():
+        import subprocess
+        from pathlib import Path as _P
+
+        # Mirror Token: env MIRROR_TOKEN or mirror-token.txt (gitignored), like AUTH_PROXY_TOKEN
+        token = os.environ.get("MIRROR_TOKEN", "").strip()
+        if not token:
+            # Fallback to mirror-token.txt for local dev
+            token_path = _P("mirror-token.txt")
+            if token_path.exists():
+                token = token_path.read_text(encoding="utf-8").strip()
+        if not token:
+            logger.warning("MIRROR_TOKEN not set and mirror-token.txt missing — skipping mirror build (isolated)")
+            return 0
+
+        host = os.environ.get("MIRROR_HOST", "https://qmd-mirror.pages.dev")
+        # Build mirror via scripts.build_mirror (Option A dist/<TOKEN>/, cleans dist)
+        try:
+            from scripts.build_mirror import build_mirror
+
+            dist = _P("dist")
+            build_mirror(corpus_root, dist, token, host)
+            logger.info("Mirror built to %s with token %s... host %s", dist, token[:6], host)
+        except Exception as e:
+            logger.error("Mirror build failed: %s", e, exc_info=True)
+            raise
+
+        # Deploy via wrangler — requires CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID
+        api_token = os.environ.get("CLOUDFLARE_API_TOKEN", "")
+        account_id = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "")
+        if not api_token or not account_id:
+            logger.info("Skipping wrangler deploy — CLOUDFLARE_API_TOKEN/ACCOUNT_ID not set (local build only)")
+            return 0
+
+        result = subprocess.run(
+            ["npx", "wrangler", "pages", "deploy", "dist", "--project-name", "qmd-mirror", "--branch", "main"],
+            check=False,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"wrangler pages deploy failed {result.returncode}")
+        logger.info("Mirror deployed via wrangler pages deploy")
+        return 0
+
+    run_once(connectors, corpus_root, state_path, qmd_runner, wiki_runner, mirror_runner=mirror_runner)
