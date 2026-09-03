@@ -109,7 +109,7 @@ def test_build_mirror_token_gated_and_llms() -> None:
         dist = tmp_path / "dist"
         token = "a3f9c123deadbeefcafebabe12345678"
 
-        result = build_mirror(corpus, dist, token, mirror_host="https://example.pages.dev")
+        result = build_mirror(corpus, dist, token, host="https://example.pages.dev")
 
         # dist/<TOKEN>/ should contain corpus copy
         assert (dist / token / "github" / "oraekene__nebula.md").exists()
@@ -157,12 +157,12 @@ def test_build_mirror_idempotent_and_token_rotation() -> None:
         corpus = _make_fixture_corpus(tmp_path)
         dist = tmp_path / "dist"
         token1 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-        build_mirror(corpus, dist, token1, mirror_host="https://example.pages.dev")
+        build_mirror(corpus, dist, token1, host="https://example.pages.dev")
         assert (dist / token1 / "github" / "oraekene__nebula.md").exists()
         # rotate token -> new dist/<new> should exist, old remains until rebuild cleans
         # Our build cleans dist first, so old token should be gone after second build
         token2 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-        build_mirror(corpus, dist, token2, mirror_host="https://example.pages.dev")
+        build_mirror(corpus, dist, token2, host="https://example.pages.dev")
         assert (dist / token2 / "github" / "oraekene__nebula.md").exists()
         assert not (dist / token1 / "github" / "oraekene__nebula.md").exists()
         assert not (dist / token1).exists()
@@ -181,7 +181,7 @@ def test_build_mirror_predictable_urls() -> None:
         corpus = _make_fixture_corpus(tmp_path)
         dist = tmp_path / "dist"
         token = "cccccccccccccccccccccccccccccccc"
-        build_mirror(corpus, dist, token, mirror_host="https://qmd.example.com")
+        build_mirror(corpus, dist, token, host="https://qmd.example.com")
         txt = (dist / "llms.txt").read_text(encoding="utf-8")
         assert f"https://qmd.example.com/{token}/github/oraekene__nebula.md" in txt
         assert f"https://qmd.example.com/{token}/wiki/index.md" in txt
@@ -199,7 +199,7 @@ def test_build_mirror_headers_and_redirects_and_robots() -> None:
         corpus = _make_fixture_corpus(tmp_path)
         dist = tmp_path / "dist"
         token = "dddddddddddddddddddddddddddddddd"
-        build_mirror(corpus, dist, token, mirror_host="https://qmd-mirror.pages.dev")
+        build_mirror(corpus, dist, token, host="https://qmd-mirror.pages.dev")
 
         headers = (dist / "_headers").read_text(encoding="utf-8")
         # llms.txt MIME
@@ -232,13 +232,13 @@ def test_build_mirror_rejects_invalid_token() -> None:
         dist = tmp_path / "dist"
         # empty
         with pytest.raises(ValueError):
-            build_mirror(corpus, dist, "", mirror_host="https://example.pages.dev")
+            build_mirror(corpus, dist, "", host="https://example.pages.dev")
         # non-hex
         with pytest.raises(ValueError):
-            build_mirror(corpus, dist, "zzzz-not-hex-!!!!", mirror_host="https://example.pages.dev")
+            build_mirror(corpus, dist, "zzzz-not-hex-!!!!", host="https://example.pages.dev")
         # too short
         with pytest.raises(ValueError):
-            build_mirror(corpus, dist, "abc123", mirror_host="https://example.pages.dev")
+            build_mirror(corpus, dist, "abc123", host="https://example.pages.dev")
 
 
 def test_build_mirror_rejects_invalid_host() -> None:
@@ -250,9 +250,9 @@ def test_build_mirror_rejects_invalid_host() -> None:
         dist = tmp_path / "dist"
         token = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
         with pytest.raises(ValueError):
-            build_mirror(corpus, dist, token, mirror_host="http://not-https.com")
+            build_mirror(corpus, dist, token, host="http://not-https.com")
         with pytest.raises(ValueError):
-            build_mirror(corpus, dist, token, mirror_host="ftp://example.com")
+            build_mirror(corpus, dist, token, host="ftp://example.com")
 
 
 def test_build_mirror_empty_corpus() -> None:
@@ -264,9 +264,10 @@ def test_build_mirror_empty_corpus() -> None:
         corpus.mkdir()
         dist = tmp_path / "dist"
         token = "ffffffffffffffffffffffffffffffff"
-        build_mirror(corpus, dist, token, mirror_host="https://example.pages.dev")
+        build_mirror(corpus, dist, token, host="https://example.pages.dev")
         assert (dist / token / "llms.txt").exists()
         txt = (dist / "llms.txt").read_text(encoding="utf-8")
         assert "# Private Knowledgebase" in txt
         # No crash, still has headers
         assert (dist / "_headers").exists()
+

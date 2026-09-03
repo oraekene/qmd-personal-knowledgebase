@@ -115,9 +115,8 @@ if __name__ == "__main__":
 
     # Discovery — load all connectors from connectors/
     from connectors.sdk.discovery import load_plugins
-    from pathlib import Path as P
 
-    plugins = load_plugins(P("connectors"))
+    plugins = load_plugins(Path("connectors"))
     connectors = list(plugins.values())
     if args.source:
         connectors = [c for c in connectors if c.NAME == args.source]
@@ -125,8 +124,8 @@ if __name__ == "__main__":
             print(f"No connector named {args.source}")
             raise SystemExit(1)
 
-    corpus_root = P(args.corpus)
-    state_path = P(args.state)
+    corpus_root = Path(args.corpus)
+    state_path = Path(args.state)
 
     def qmd_runner():
         import subprocess
@@ -151,23 +150,18 @@ if __name__ == "__main__":
 
     def mirror_runner():
         import subprocess
-        from pathlib import Path as MirrorPath
 
-        # Mirror Token: env MIRROR_TOKEN or mirror-token.txt (gitignored), like AUTH_PROXY_TOKEN
-        token = os.environ.get("MIRROR_TOKEN", "").strip()
-        if not token:
-            token_path = MirrorPath("mirror-token.txt")
-            if token_path.exists():
-                token = token_path.read_text(encoding="utf-8").strip()
+        # Reuse shared token loader — fixes Duplicated Code with scripts/build_mirror
+        from scripts.build_mirror import build_mirror, load_mirror_token
+
+        token = load_mirror_token()
         if not token:
             logger.warning("MIRROR_TOKEN not set and mirror-token.txt missing — skipping mirror build (isolated)")
             return 0
 
         host = os.environ.get("MIRROR_HOST", "https://qmd-mirror.pages.dev")
         try:
-            from scripts.build_mirror import build_mirror
-
-            dist = MirrorPath("dist")
+            dist = Path("dist")
             build_mirror(corpus_root, dist, token, host)
             logger.info("Mirror built to %s with token %s... host %s", dist, token[:6], host)
         except Exception as e:

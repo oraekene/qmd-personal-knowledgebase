@@ -12,12 +12,31 @@ Production promotion of prototype/static-mirror ccf94b2.
 
 from __future__ import annotations
 
+import os
 import pathlib
 import re
 import shutil
 from typing import List
 
+
 _TOKEN_HEX_RE = re.compile(r"^[0-9a-fA-F]+$")
+
+
+class MirrorToken(str):
+    """Value object for Mirror Token — hex, non-empty, >=16 chars.
+
+    Wraps Primitive Obsession (token: str) with validation. Use str(MirrorToken)
+    where plain string needed; comparison uses underlying str.
+    """
+
+    def __new__(cls, value: str) -> "MirrorToken":
+        if not value:
+            raise ValueError("Mirror Token must not be empty — generate via `openssl rand -hex 16`")
+        if not _TOKEN_HEX_RE.match(value):
+            raise ValueError(f"Mirror Token must be hex (openssl rand -hex 16), got {value!r}")
+        if len(value) < 16:
+            raise ValueError(f"Mirror Token too short ({len(value)}), expected >=16 hex chars")
+        return super().__new__(cls, value)
 
 
 def _is_excluded(path: pathlib.Path) -> bool:
@@ -38,20 +57,26 @@ def _collect_units(corpus: pathlib.Path) -> List[pathlib.Path]:
     return units
 
 
-def _validate_token(token: str) -> None:
-    if not token:
-        raise ValueError("Mirror Token must not be empty — generate via `openssl rand -hex 16`")
-    if not _TOKEN_HEX_RE.match(token):
-        raise ValueError(f"Mirror Token must be hex (openssl rand -hex 16), got {token!r}")
-    if len(token) < 16:
-        raise ValueError(f"Mirror Token too short ({len(token)}), expected >=16 hex chars")
+def load_mirror_token(
+    env_var: str = "MIRROR_TOKEN", token_file: pathlib.Path = pathlib.Path("mirror-token.txt")
+) -> str | None:
+    """Load Mirror Token from env then file — shared helper for orchestrator + CLI."""
+    token = os.environ.get(env_var, "").strip()
+    if not token and token_file.exists():
+        token = token_file.read_text(encoding="utf-8").strip()
+    return token if token else None
 
 
 def _validate_host(host: str) -> str:
     host = host.rstrip("/")
     if not host.startswith("https://"):
-        raise ValueError(f"mirror_host must be https://, got {host!r}")
+        raise ValueError(f"mirror host must be https://, got {host!r}")
     return host
+
+
+def _token_url(host: str, token: str, rel_posix: str) -> str:
+    """Single helper for tokenized predictable URL — fixes Duplicated Code."""
+    return f"{host}/{token}/{rel_posix}"
 
 
 def build_mirror(
@@ -59,7 +84,6 @@ def build_mirror(
     dist: pathlib.Path,
     token: str,
     host: str = "https://qmd-mirror.pages.dev",
-    mirror_host: str | None = None,
 ) -> pathlib.Path:
     """Build mirror dist from corpus with token prefix.
 
@@ -68,16 +92,14 @@ def build_mirror(
     plus 404.html, _headers, _redirects, robots.txt.
 
     Predictable URLs: https://host/<TOKEN>/<silo>/<path>.md
-
-    Accepts `host` (spec #19) and alias `mirror_host` (prototype compat).
     """
-    if mirror_host is not None:
-        host = mirror_host
-    _validate_token(token)
+    # Validate via value object (Primitive Obsession fix) — raises if invalid
+    MirrorToken(token)
     host = _validate_host(host)
 
-    # Atomic build: write to tmp then swap — avoids losing previous dist on crash
+    # Atomic build: write to tmp then swap via backup — avoids losing dist on crash
     tmp_dist = dist.with_name(dist.name + ".tmp.build")
+    backup_dist: pathlib.Path | None = None
     if tmp_dist.exists():
         shutil.rmtree(tmp_dist)
     tmp_dist.mkdir(parents=True, exist_ok=True)
@@ -89,7 +111,6 @@ def build_mirror(
     units = _collect_units(corpus)
 
     # Copy corpus tree into tmp_dist/<TOKEN>/ preserving silo structure
-    # Copy all files (not just md) for full mirror, but tests focus on md Units
     if corpus.exists():
         for src in corpus.rglob("*"):
             if src.is_dir():
@@ -114,7 +135,7 @@ def build_mirror(
         "",
         "## Wiki",
     ]
-    # Strict silo check — only top-level wiki silo is Wiki (fixes Feature Envy / misclassify)
+
     def _is_wiki(u: pathlib.Path) -> bool:
         try:
             rel = u.relative_to(corpus)
@@ -127,28 +148,17 @@ def build_mirror(
 
     for u in wiki_units:
         rel_str = u.relative_to(corpus).as_posix()
-        url = f"{host}/{token}/{rel_str}"
-        name = u.stem
-        llms_lines.append(f"- [{name}]({url}): Wiki page")
+        llms_lines.append(f"- [{u.stem}]({_token_url(host, token, rel_str)}): Wiki page")
 
     llms_lines.append("")
     llms_lines.append("## Silos")
 
     for u in other_units:
         rel_str = u.relative_to(corpus).as_posix()
-        url = f"{host}/{token}/{rel_str}"
-        name = u.stem
         rel_parent = u.relative_to(corpus).parent
         silo = "/".join(rel_parent.parts) if rel_parent.parts else "root"
-        llms_lines.append(f"- [{name}]({url}): {silo}")
+        llms_lines.append(f"- [{u.stem}]({_token_url(host, token, rel_str)}): {silo}")
 
-    llms_lines.extend(
-        [
-            "",
-            "## Optional",
-            f"- [Token root]({host}/{token}/): Mirror root (token required)",
-        ]
-    )
     llms_content = "\n".join(llms_lines) + "\n"
 
     (tmp_dist / "llms.txt").write_text(llms_content, encoding="utf-8")
@@ -160,11 +170,14 @@ def build_mirror(
         encoding="utf-8",
     )
 
-    # robots.txt — disallow all but llms.txt
-    (tmp_dist / "robots.txt").write_text("User-agent: *\nDisallow: /\nAllow: /llms.txt\n", encoding="utf-8")
+    # robots.txt — allow llms.txt at root and tokenized (fixes strict crawler blocking)
+    (tmp_dist / "robots.txt").write_text(
+        "User-agent: *\nDisallow: /\nAllow: /llms.txt\nAllow: /" + token + "/llms.txt\nAllow: /" + token + "/*\n",
+        encoding="utf-8",
+    )
 
     # _headers — Cloudflare Pages headers: markdown MIME, noindex, cache
-    # Fix glob for nested md: Pages needs explicit depth patterns; include noindex for all tokenized
+    # Depth patterns + catch-all for arbitrary depth (fixes Spec wrong: depth 4)
     headers_content = f"""/llms.txt
   Content-Type: text/markdown; charset=utf-8
   X-Robots-Tag: noindex
@@ -180,15 +193,25 @@ def build_mirror(
 /*/*/*.md
   Content-Type: text/markdown; charset=utf-8
   X-Robots-Tag: noindex
+/*/*/*/*.md
+  Content-Type: text/markdown; charset=utf-8
+  X-Robots-Tag: noindex
 /{token}/*
+  Content-Type: text/markdown; charset=utf-8
   X-Robots-Tag: noindex
   Cache-Control: public, max-age=3600
 /{token}/*.md
   Content-Type: text/markdown; charset=utf-8
+  X-Robots-Tag: noindex
 /{token}/*/*.md
   Content-Type: text/markdown; charset=utf-8
+  X-Robots-Tag: noindex
 /{token}/*/*/*.md
   Content-Type: text/markdown; charset=utf-8
+  X-Robots-Tag: noindex
+/{token}/*/*/*/*.md
+  Content-Type: text/markdown; charset=utf-8
+  X-Robots-Tag: noindex
 /404.html
   Cache-Control: no-store
 """
@@ -197,23 +220,35 @@ def build_mirror(
     # _redirects — no SPA; token prefix 200, else 404.html
     (tmp_dist / "_redirects").write_text(f"/{token}/*  /{token}/:splat  200\n/*  /404.html  404\n", encoding="utf-8")
 
-    # Atomic swap: replace dist with tmp_dist (preserves previous on failure, fixes rotation)
+    # Atomic swap: backup old dist, rename tmp, remove backup (preserves previous on failure)
     if dist.exists():
-        shutil.rmtree(dist)
-    tmp_dist.rename(dist)
+        backup_dist = dist.with_name(dist.name + ".tmp.backup")
+        if backup_dist.exists():
+            shutil.rmtree(backup_dist)
+        dist.rename(backup_dist)
+    try:
+        tmp_dist.rename(dist)
+        if backup_dist and backup_dist.exists():
+            shutil.rmtree(backup_dist)
+    except Exception:
+        # Rollback: restore backup if rename failed
+        if backup_dist and backup_dist.exists():
+            if dist.exists():
+                shutil.rmtree(dist)
+            backup_dist.rename(dist)
+        raise
     return dist
 
 
 if __name__ == "__main__":
     import argparse
-    import os
 
     parser = argparse.ArgumentParser(description="Build Static Mirror for Cloudflare Pages")
     parser.add_argument("--corpus", default="corpus", help="corpus dir")
     parser.add_argument("--dist", default="dist", help="output dist dir")
     parser.add_argument(
         "--token",
-        default=os.environ.get("MIRROR_TOKEN") or os.environ.get("TOKEN") or "",
+        default=os.environ.get("MIRROR_TOKEN") or "",
         help="Mirror Token (hex, via openssl rand -hex 16)",
     )
     parser.add_argument(
@@ -224,10 +259,9 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if not args.token:
-        # Fallback for local smoke if mirror-token.txt exists
-        token_file = pathlib.Path("mirror-token.txt")
-        if token_file.exists():
-            args.token = token_file.read_text(encoding="utf-8").strip()
+        loaded = load_mirror_token()
+        if loaded:
+            args.token = loaded
     if not args.token:
         parser.error("Mirror Token required: --token <hex> or env MIRROR_TOKEN or mirror-token.txt")
 
