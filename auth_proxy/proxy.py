@@ -53,22 +53,49 @@ def check_auth(headers: Dict[str, str], expected_token: str) -> bool:
     return hmac.compare_digest(token, expected_token)
 
 
+def check_origin(headers: Dict[str, str], allowed_origins: tuple[str, ...] = ("*",)) -> bool:
+    """Check Origin against allowlist (issue #22).
+
+    Default ("*",) preserves Tunnel passthrough. When configured (e.g.
+    https://claude.ai), spoofed origins are rejected with 403 by the caller.
+    Case-insensitive header name, exact value match, "*" bypasses.
+    """
+    if "*" in allowed_origins:
+        return True
+    origin = ""
+    for k, v in headers.items():
+        if k.lower() == "origin":
+            origin = v if isinstance(v, str) else ""
+            break
+    if not origin:
+        return True  # non-browser clients send no Origin
+    return origin in allowed_origins
+
+
 class ProxyApp:
     """Minimal proxy app for TDD — handle() simulates HTTP without network."""
 
-    def __init__(self, expected_token: str, qmd_handler: Callable[..., Tuple[int, Dict[str, str], bytes]]) -> None:
+    def __init__(
+        self,
+        expected_token: str,
+        qmd_handler: Callable[..., Tuple[int, Dict[str, str], bytes]],
+        allowed_origins: tuple[str, ...] = ("*",),
+    ) -> None:
         if not expected_token:
             raise ValueError("expected_token must not be empty")
         if not callable(qmd_handler):
             raise TypeError("qmd_handler must be callable")
         self.expected_token = expected_token
         self.qmd_handler = qmd_handler
+        self.allowed_origins = allowed_origins
 
     def handle(
         self, method: str, path: str, headers: Dict[str, str], body: bytes
     ) -> Tuple[int, Dict[str, str], bytes]:
         if not check_auth(headers, self.expected_token):
             return unauthorized_response()
+        if not check_origin(headers, self.allowed_origins):
+            return 403, {"Content-Type": "application/json"}, b'{"error": "Forbidden origin"}'
         return self.qmd_handler(method, path, headers, body)
 
 

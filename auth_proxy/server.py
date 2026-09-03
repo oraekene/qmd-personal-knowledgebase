@@ -16,7 +16,14 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import ClassVar
 
-from auth_proxy.proxy import _UNAUTHORIZED_BODY, _UNAUTHORIZED_HEADERS, check_auth
+from auth_proxy.proxy import _UNAUTHORIZED_BODY, _UNAUTHORIZED_HEADERS, check_auth, check_origin
+
+
+def _allowed_origins() -> tuple[str, ...]:
+    raw = os.environ.get("QMD_ALLOWED_ORIGINS", "*").strip()
+    if not raw or raw == "*":
+        return ("*",)
+    return tuple(o.strip() for o in raw.split(",") if o.strip()) or ("*",)
 
 
 def _send_unauthorized(handler: BaseHTTPRequestHandler) -> None:
@@ -42,6 +49,12 @@ def make_handler(token: str, target: str) -> type[BaseHTTPRequestHandler]:
             headers = {k: v for k, v in self.headers.items()}
             if not check_auth(headers, token):
                 _send_unauthorized(self)
+                return
+            if not check_origin(headers, _allowed_origins()):
+                self.send_response(403)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"error": "Forbidden origin"}')
                 return
             url = target + self.path
             # Preserve verbatim method via self.command; body only if present
