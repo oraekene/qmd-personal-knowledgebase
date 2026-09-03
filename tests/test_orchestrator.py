@@ -111,9 +111,11 @@ def test_orchestrator_crawlstate_persists_and_resumes():
 
         connector = OnceConnector()
         qmd_mock = Mock(return_value=0)
+        # Use fixed now to make test deterministic (avoid flakiness when now-2days crosses fake_created)
+        fixed_now = datetime(2026, 9, 1, 9, 0, 0, tzinfo=timezone.utc)
 
         # First run — should write and advance last_seen
-        run_once([connector], corpus, state_path, qmd_mock, Mock())
+        run_once([connector], corpus, state_path, qmd_mock, Mock(), now=fixed_now)
         assert (corpus / "github" / "oraekene__resume.md").exists()
         assert qmd_mock.call_count == 1
         state = CrawlState(state_path)
@@ -122,7 +124,7 @@ def test_orchestrator_crawlstate_persists_and_resumes():
 
         # Second run — since is now first_last (after fake_created), should yield 0 and not write duplicate
         qmd_mock2 = Mock(return_value=0)
-        run_once([connector], corpus, state_path, qmd_mock2, Mock())
+        run_once([connector], corpus, state_path, qmd_mock2, Mock(), now=fixed_now + timedelta(hours=4))
         # Still only one file, no duplicate
         assert len(list(corpus.glob("github/**/*.md"))) == 1
         # qmd still called exactly once per run (even though no new Units, the single qmd update still runs)

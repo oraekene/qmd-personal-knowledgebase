@@ -140,13 +140,22 @@ if __name__ == "__main__":
         return 0
 
     def wiki_runner():
-        import subprocess
-        # Isolated synthesis: llmwiki compile --stale (or compile)
-        # Failure is isolated — log and continue
-        result = subprocess.run(["llmwiki", "compile", "--stale"], check=False)
-        if result.returncode != 0:
-            raise RuntimeError(f"llmwiki compile failed {result.returncode}")
-        return 0
+        # Wiki synthesis after embed: llmwiki compile over newly ingested Units → corpus/wiki/
+        # Per research #8 + spec.md:141-157 + ADR-0006/0008 — Workers AI via OPENAI_BASE_URL
+        # Uses scripts.wiki wrapper which handles provider-guard, budget, concurrency, SHA state
+        # Failure is isolated — missing key/outage logs, pipeline still completes, no raw Units rewritten
+        try:
+            from scripts.wiki import compile_wiki
+
+            # Pass corpus_root so wiki goes to corpus/wiki, state to .llmwiki/state.json
+            result = compile_wiki(corpus_root)
+            logger.info("Wiki compile result: %s", result)
+            return 0
+        except Exception as e:
+            # Also try subprocess fallback for environments with real llmwiki binary
+            # Provider guard throws ProviderUnavailableError (provider-guard.ts:53) — log and re-raise for isolation
+            logger.error("Wiki compile failed: %s", e, exc_info=True)
+            raise
 
     def mirror_runner():
         import subprocess
