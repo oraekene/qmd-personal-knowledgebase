@@ -1,0 +1,24 @@
+[Unit]
+Description=QMD Auth Proxy (127.0.0.1:3210 -> 127.0.0.1:8181, Bearer token gate)
+After=qmd-mcp.service
+Requires=qmd-mcp.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/qmd/auth-proxy.env
+# auth-proxy.env contains: AUTH_PROXY_TOKEN=<secret>  PROXY_PORT=3210  QMD_TARGET=http://127.0.0.1:8181
+ExecStart=/usr/bin/python3 -m auth_proxy
+Restart=on-failure
+RestartSec=2
+StartLimitInterval=60
+StartLimitBurst=5
+TimeoutStartSec=10
+
+User=qmd
+Group=qmd
+NoNewPrivileges=true
+# Loopback only — `auth_proxy/server.py` binds 127.0.0.1
+
+[Install]
+WantedBy=multi-user.target

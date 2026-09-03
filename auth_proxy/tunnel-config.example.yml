@@ -1,0 +1,26 @@
+# cloudflared remotely-managed Tunnel config — example (dashboard is source of truth)
+# Per #18 + research #4 + spec.md:128-131
+# Named tunnel: qmd-tunnel (stable tunnel_id.cfargotunnel.com, custom qmd.example.com)
+# Run: cloudflared tunnel run --token $TUNNEL_TOKEN
+# Ingress configured in Cloudflare dashboard (remotely-managed) as:
+#   qmd.example.com  -> http://127.0.0.1:3210   (Auth Proxy)
+#   tunnel_id.cfargotunnel.com -> http://127.0.0.1:3210
+# Local fallback file (if using locally-managed tunnel):
+tunnel: qmd-tunnel
+credentials-file: /etc/cloudflared/qmd-tunnel.json
+
+ingress:
+  - hostname: qmd.example.com
+    service: http://127.0.0.1:3210
+    originRequest:
+      connectTimeout: 10s
+      keepAliveTimeout: 90s
+      # QUIC is default transport on 7844/udp — survives NAT, reconnects in ~20s after sleep/wake
+  - hostname: "*.cfargotunnel.com"
+    service: http://127.0.0.1:3210
+  - service: http_status:404
+
+# Notes:
+# - Do NOT point tunnel directly at QMD 8181 — must go via Auth Proxy 3210 for token gate.
+# - QMD behind proxy runs with QMD_ALLOWED_ORIGINS=* (trust localhost).
+# - For remotely-managed tunnels, this file is optional — dashboard ingress wins.

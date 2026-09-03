@@ -1,0 +1,24 @@
+[Unit]
+Description=QMD HTTP MCP (127.0.0.1:8181, QMD_ALLOWED_ORIGINS=* behind proxy)
+After=network.target
+
+[Service]
+Type=simple
+Environment=QMD_ALLOWED_ORIGINS=*
+# QMD runs as daemon but systemd prefers foreground; use --http --port 8181
+ExecStart=/usr/local/bin/qmd mcp --http --port 8181
+Restart=on-failure
+RestartSec=2
+StartLimitInterval=60
+StartLimitBurst=5
+# KeepAlive: survives sleep/wake via Restart
+# Note: direct access to 8181 without proxy will still see * — the tunnel+proxy is the security boundary.
+# For strict direct-403 demo, run QMD with QMD_ALLOWED_ORIGINS=https://claude.ai,https://claude.com
+# and put * only behind proxy via separate env override (see README).
+
+User=qmd
+Group=qmd
+WorkingDirectory=/opt/qmd
+
+[Install]
+WantedBy=multi-user.target
