@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from auth_proxy.proxy import ProxyApp, check_auth, create_proxy_app, unauthorized_response
-from auth_proxy.server import _send_unauthorized, make_handler
+from auth_proxy.proxy import ProxyApp, check_auth, check_origin, create_proxy_app, unauthorized_response
+from auth_proxy.server import _allowed_origins, _send_unauthorized, make_handler
 
 
 def test_check_auth_correct_token_passes() -> None:
@@ -292,3 +292,38 @@ def test_server_make_handler_forwards_verb_and_error_verbatim(monkeypatch) -> No
     assert fake._response_code == 403
     assert fake._sent_headers.get("X-Upstream") == "1"
     assert fake.wfile.getvalue() == b"forbidden"
+
+def test_check_origin_default_star_passthrough() -> None:
+    """Default allowlist preserves Tunnel passthrough (issue #22)."""
+    assert check_origin({"Origin": "https://attacker.example"}, ("*",)) is True
+    assert check_origin({}, ("*",)) is True
+
+
+def test_check_origin_strict_rejects_spoof() -> None:
+    """Configured allowlist 403s spoofs, allows claude.ai, passes no-Origin (issue #22)."""
+    allowed = ("https://claude.ai",)
+    assert check_origin({"Origin": "https://attacker.example"}, allowed) is False
+    assert check_origin({"Origin": "https://claude.ai"}, allowed) is True
+    assert check_origin({}, allowed) is True
+
+
+def test_proxy_app_strict_origin_403() -> None:
+    """ProxyApp with allowlist rejects spoofed Origin after passing auth (issue #22)."""
+    app = ProxyApp("tok", lambda m, p, h, b: (200, {}, b"ok"), allowed_origins=("https://claude.ai",))
+    assert app.handle("POST", "/mcp", {"Authorization": "Bearer tok"}, b"{}")[0] == 200
+    code, _, body = app.handle(
+        "POST", "/mcp",
+        {"Authorization": "Bearer tok", "Origin": "https://attacker.example"}, b"{}",
+    )
+    assert code == 403
+    assert body == b'{"error": "Forbidden origin"}'
+
+
+def test_allowed_origins_parses_env(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """QMD_ALLOWED_ORIGINS comma-parses; empty/* collapse to passthrough (issue #22)."""
+    monkeypatch.setenv("QMD_ALLOWED_ORIGINS", "https://claude.ai, https://claude.com")
+    assert _allowed_origins() == ("https://claude.ai", "https://claude.com")
+    monkeypatch.setenv("QMD_ALLOWED_ORIGINS", "*")
+    assert _allowed_origins() == ("*",)
+    monkeypatch.setenv("QMD_ALLOWED_ORIGINS", "")
+    assert _allowed_origins() == ("*",)

@@ -136,6 +136,12 @@ def main() -> None:
 
     target = os.environ.get("QMD_TARGET", "http://127.0.0.1:8181")
     listen_port = int(os.environ.get("PROXY_PORT", "3210"))
+    if _allowed_origins() == ("*",):
+        print(
+            "WARNING: QMD_ALLOWED_ORIGINS=* — Origin passthrough (fail-open). "
+            "Set QMD_ALLOWED_ORIGINS=https://claude.ai to 403 spoofed Origins in proxy.",
+            file=sys.stderr,
+        )
 
     handler_cls = make_handler(token, target)
     print(f"Auth Proxy listening on 127.0.0.1:{listen_port} -> {target}")

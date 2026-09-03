@@ -511,10 +511,10 @@ def refresh_stale(
     """Wrapper for `llmwiki refresh --stale` — recompiles only stale pages.
 
     Incremental by design: detect_changes() already limits work to new/changed
-    Units, so refresh delegates to compile_wiki (same SHA state). Not a middle-man:
-    it documents the --stale intent for callers/orchestrator that prefer the
-    refresh verb. Real `npx llmwiki refresh --stale` is used when not mocked;
-    here compile path handles both.
+    Units, so refresh delegates to compile_wiki (same SHA state). Kept as the
+    refresh verb (not collapsed into a mode flag) because it has two callers —
+    orchestrator WIKI_MODE=refresh and the `refresh` CLI command — making this
+    a real seam, not a middle-man (issue #22 review).
     """
     if state_path is None:
         state_path = resolve_state_path(corpus)
