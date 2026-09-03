@@ -43,6 +43,21 @@ DEFAULT_BASE_URL = "https://api.cloudflare.com/client/v4/accounts/<id>/ai/v1"
 STATE_FILE = pathlib.Path(".llmwiki/state.json")
 WIKI_DIR = pathlib.Path("corpus/wiki")
 
+
+def resolve_state_path(corpus: pathlib.Path = pathlib.Path("corpus")) -> pathlib.Path:
+    """Resolve Wiki state path relative to the Corpus parent (issue #22).
+
+    Convention: state lives at corpus.parent/.llmwiki/state.json (repo root for
+    default corpus=corpus). Falls back to cwd-relative STATE_FILE only when the
+    corpus has no parent (corpus == Path(".")).
+    """
+    try:
+        if corpus == pathlib.Path("."):
+            return STATE_FILE
+        return corpus.parent / ".llmwiki" / "state.json"
+    except Exception:
+        return STATE_FILE
+
 # Linter mapping note: llmwiki linter/rules-citations.ts resolves ^[file] against
 # path.join(root, SOURCES_DIR) where SOURCES_DIR="sources". Our corpus/ IS the
 # sources set (Units under corpus/<silo>/*.md, excluding wiki output). So our
@@ -150,8 +165,10 @@ def _save_state(hashes: Dict[str, str], state_path: pathlib.Path = STATE_FILE) -
         raise
 
 
-def detect_changes(corpus: pathlib.Path, state_path: pathlib.Path = STATE_FILE) -> Dict[str, str]:
+def detect_changes(corpus: pathlib.Path, state_path: pathlib.Path | None = None) -> Dict[str, str]:
     """Return {rel_posix: new_hash} for new/changed Units (SHA incremental)."""
+    if state_path is None:
+        state_path = resolve_state_path(corpus)
     current: Dict[str, str] = {}
     for p in _collect_units(corpus):
         rel = p.relative_to(corpus).as_posix()
@@ -367,7 +384,7 @@ def _generate_pages_concurrent(
 
 def compile_wiki(
     corpus: pathlib.Path = pathlib.Path("corpus"),
-    state_path: pathlib.Path = STATE_FILE,
+    state_path: pathlib.Path | None = None,
     mock: bool | None = None,
 ) -> Dict[str, int]:
     """Compile wiki after embed — Workers AI routing, SHA incremental, failure isolated.
@@ -381,6 +398,8 @@ def compile_wiki(
     State lives at corpus.parent/.llmwiki/state.json by convention (repo root);
     pass explicit state_path for temp corpora in tests.
     """
+    if state_path is None:
+        state_path = resolve_state_path(corpus)
     if mock is None:
         mock = os.environ.get("LLMWIKI_MOCK", "").strip() in ("1", "true", "yes")
 
@@ -492,7 +511,7 @@ def compile_wiki(
 
 def refresh_stale(
     corpus: pathlib.Path = pathlib.Path("corpus"),
-    state_path: pathlib.Path = STATE_FILE,
+    state_path: pathlib.Path | None = None,
 ) -> Dict[str, int]:
     """Wrapper for `llmwiki refresh --stale` — recompiles only stale pages.
 
@@ -502,6 +521,8 @@ def refresh_stale(
     refresh verb. Real `npx llmwiki refresh --stale` is used when not mocked;
     here compile path handles both.
     """
+    if state_path is None:
+        state_path = resolve_state_path(corpus)
     return compile_wiki(corpus, state_path)
 
 
