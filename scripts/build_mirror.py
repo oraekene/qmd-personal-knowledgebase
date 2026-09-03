@@ -20,16 +20,19 @@ from typing import List
 _TOKEN_HEX_RE = re.compile(r"^[0-9a-fA-F]+$")
 
 
+def _is_excluded(path: pathlib.Path) -> bool:
+    """Single helper for state/qmd exclusion — fixes Duplicated Code."""
+    return "_state" in path.parts or ".qmd" in path.parts
+
+
 def _collect_units(corpus: pathlib.Path) -> List[pathlib.Path]:
     """Collect markdown Units under corpus, sorted, excluding state/qmd."""
     units: List[pathlib.Path] = []
     if not corpus.exists():
         return units
     for p in corpus.rglob("*.md"):
-        # Exclude state and qmd index dirs, and hidden
-        if "_state" in p.parts or ".qmd" in p.parts:
+        if _is_excluded(p):
             continue
-        # Also skip if under dist? corpus and dist are separate, so ignore
         units.append(p)
     units.sort()
     return units
@@ -55,7 +58,8 @@ def build_mirror(
     corpus: pathlib.Path,
     dist: pathlib.Path,
     token: str,
-    mirror_host: str = "https://qmd-mirror.pages.dev",
+    host: str = "https://qmd-mirror.pages.dev",
+    mirror_host: str | None = None,
 ) -> pathlib.Path:
     """Build mirror dist from corpus with token prefix.
 
@@ -64,30 +68,34 @@ def build_mirror(
     plus 404.html, _headers, _redirects, robots.txt.
 
     Predictable URLs: https://host/<TOKEN>/<silo>/<path>.md
+
+    Accepts `host` (spec #19) and alias `mirror_host` (prototype compat).
     """
+    if mirror_host is not None:
+        host = mirror_host
     _validate_token(token)
-    host = _validate_host(mirror_host)
+    host = _validate_host(host)
 
-    # Clean dist for rotation idempotence — old token prefix disappears
-    if dist.exists():
-        shutil.rmtree(dist)
-    dist.mkdir(parents=True, exist_ok=True)
+    # Atomic build: write to tmp then swap — avoids losing previous dist on crash
+    tmp_dist = dist.with_name(dist.name + ".tmp.build")
+    if tmp_dist.exists():
+        shutil.rmtree(tmp_dist)
+    tmp_dist.mkdir(parents=True, exist_ok=True)
 
-    token_dir = dist / token
+    token_dir = tmp_dist / token
     token_dir.mkdir(parents=True, exist_ok=True)
 
     # Collect Units (for llms.txt) — before copy, sorted
     units = _collect_units(corpus)
 
-    # Copy corpus tree into dist/<TOKEN>/ preserving silo structure
+    # Copy corpus tree into tmp_dist/<TOKEN>/ preserving silo structure
     # Copy all files (not just md) for full mirror, but tests focus on md Units
     if corpus.exists():
         for src in corpus.rglob("*"):
             if src.is_dir():
                 continue
-            if "_state" in src.parts or ".qmd" in src.parts:
+            if _is_excluded(src):
                 continue
-            # Preserve relative path under corpus
             try:
                 rel = src.relative_to(corpus)
             except ValueError:
@@ -106,8 +114,16 @@ def build_mirror(
         "",
         "## Wiki",
     ]
-    wiki_units = [u for u in units if "wiki" in u.parts]
-    other_units = [u for u in units if "wiki" not in u.parts]
+    # Strict silo check — only top-level wiki silo is Wiki (fixes Feature Envy / misclassify)
+    def _is_wiki(u: pathlib.Path) -> bool:
+        try:
+            rel = u.relative_to(corpus)
+            return rel.parts[0] == "wiki" if rel.parts else False
+        except ValueError:
+            return False
+
+    wiki_units = [u for u in units if _is_wiki(u)]
+    other_units = [u for u in units if not _is_wiki(u)]
 
     for u in wiki_units:
         rel_str = u.relative_to(corpus).as_posix()
@@ -122,10 +138,8 @@ def build_mirror(
         rel_str = u.relative_to(corpus).as_posix()
         url = f"{host}/{token}/{rel_str}"
         name = u.stem
-        # silo is top-level dir, or parent path for nested
-        silo = "/".join(u.relative_to(corpus).parent.parts) if u.parent != corpus else "root"
-        if not silo:
-            silo = "root"
+        rel_parent = u.relative_to(corpus).parent
+        silo = "/".join(rel_parent.parts) if rel_parent.parts else "root"
         llms_lines.append(f"- [{name}]({url}): {silo}")
 
     llms_lines.extend(
@@ -137,36 +151,56 @@ def build_mirror(
     )
     llms_content = "\n".join(llms_lines) + "\n"
 
-    (dist / "llms.txt").write_text(llms_content, encoding="utf-8")
+    (tmp_dist / "llms.txt").write_text(llms_content, encoding="utf-8")
     (token_dir / "llms.txt").write_text(llms_content, encoding="utf-8")
 
     # 404.html disables SPA fallback — untokenized paths must 404
-    (dist / "404.html").write_text(
+    (tmp_dist / "404.html").write_text(
         "<html><head><title>404 Not Found</title></head><body><h1>404 Not Found</h1><p>Token required.</p></body></html>\n",
         encoding="utf-8",
     )
 
     # robots.txt — disallow all but llms.txt
-    (dist / "robots.txt").write_text("User-agent: *\nDisallow: /\nAllow: /llms.txt\n", encoding="utf-8")
+    (tmp_dist / "robots.txt").write_text("User-agent: *\nDisallow: /\nAllow: /llms.txt\n", encoding="utf-8")
 
     # _headers — Cloudflare Pages headers: markdown MIME, noindex, cache
+    # Fix glob for nested md: Pages needs explicit depth patterns; include noindex for all tokenized
     headers_content = f"""/llms.txt
   Content-Type: text/markdown; charset=utf-8
+  X-Robots-Tag: noindex
 /{token}/llms.txt
   Content-Type: text/markdown; charset=utf-8
+  X-Robots-Tag: noindex
 /*.md
   Content-Type: text/markdown; charset=utf-8
+  X-Robots-Tag: noindex
+/*/*.md
+  Content-Type: text/markdown; charset=utf-8
+  X-Robots-Tag: noindex
+/*/*/*.md
+  Content-Type: text/markdown; charset=utf-8
+  X-Robots-Tag: noindex
 /{token}/*
   X-Robots-Tag: noindex
   Cache-Control: public, max-age=3600
+/{token}/*.md
+  Content-Type: text/markdown; charset=utf-8
+/{token}/*/*.md
+  Content-Type: text/markdown; charset=utf-8
+/{token}/*/*/*.md
+  Content-Type: text/markdown; charset=utf-8
 /404.html
   Cache-Control: no-store
 """
-    (dist / "_headers").write_text(headers_content, encoding="utf-8")
+    (tmp_dist / "_headers").write_text(headers_content, encoding="utf-8")
 
     # _redirects — no SPA; token prefix 200, else 404.html
-    (dist / "_redirects").write_text(f"/{token}/*  /{token}/:splat  200\n/*  /404.html  404\n", encoding="utf-8")
+    (tmp_dist / "_redirects").write_text(f"/{token}/*  /{token}/:splat  200\n/*  /404.html  404\n", encoding="utf-8")
 
+    # Atomic swap: replace dist with tmp_dist (preserves previous on failure, fixes rotation)
+    if dist.exists():
+        shutil.rmtree(dist)
+    tmp_dist.rename(dist)
     return dist
 
 

@@ -151,13 +151,12 @@ if __name__ == "__main__":
 
     def mirror_runner():
         import subprocess
-        from pathlib import Path as _P
+        from pathlib import Path as MirrorPath
 
         # Mirror Token: env MIRROR_TOKEN or mirror-token.txt (gitignored), like AUTH_PROXY_TOKEN
         token = os.environ.get("MIRROR_TOKEN", "").strip()
         if not token:
-            # Fallback to mirror-token.txt for local dev
-            token_path = _P("mirror-token.txt")
+            token_path = MirrorPath("mirror-token.txt")
             if token_path.exists():
                 token = token_path.read_text(encoding="utf-8").strip()
         if not token:
@@ -165,18 +164,16 @@ if __name__ == "__main__":
             return 0
 
         host = os.environ.get("MIRROR_HOST", "https://qmd-mirror.pages.dev")
-        # Build mirror via scripts.build_mirror (Option A dist/<TOKEN>/, cleans dist)
         try:
             from scripts.build_mirror import build_mirror
 
-            dist = _P("dist")
+            dist = MirrorPath("dist")
             build_mirror(corpus_root, dist, token, host)
             logger.info("Mirror built to %s with token %s... host %s", dist, token[:6], host)
         except Exception as e:
             logger.error("Mirror build failed: %s", e, exc_info=True)
             raise
 
-        # Deploy via wrangler — requires CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID
         api_token = os.environ.get("CLOUDFLARE_API_TOKEN", "")
         account_id = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "")
         if not api_token or not account_id:
