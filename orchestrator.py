@@ -11,6 +11,8 @@ This is the production orchestrator for #15 — testable via run_once.
 """
 from __future__ import annotations
 import logging
+import os
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, List
@@ -22,6 +24,45 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_STATE_PATH = Path("corpus/_state/crawl_state.json")
 DEFAULT_CORPUS_ROOT = Path("corpus")
+
+
+@dataclass(frozen=True)
+class OrchestratorConfig:
+    """Single locality for pipeline knobs + Corpus-relative paths (issue #22).
+
+    Parses env once so wiki_runner/mirror_runner closures stop scattering
+    os.environ.get across the module. Paths resolve from corpus_root.
+    """
+
+    corpus_root: Path = DEFAULT_CORPUS_ROOT
+    wiki_enabled: bool = True
+    wiki_mode: str = "compile"
+    wiki_min_interval_hours: float = 0.0
+    mirror_host: str = "https://qmd-mirror.pages.dev"
+    dist_dir: Path = field(default_factory=lambda: Path("dist"))
+
+    @property
+    def wiki_state_file(self) -> Path:
+        from scripts.wiki import resolve_state_path
+
+        return resolve_state_path(self.corpus_root)
+
+    @classmethod
+    def from_env(cls, corpus_root: Path = DEFAULT_CORPUS_ROOT) -> "OrchestratorConfig":
+        enabled = os.environ.get("WIKI_ENABLED", "1").strip().lower() not in ("0", "false", "no", "off")
+        mode = os.environ.get("WIKI_MODE", "compile").strip().lower() or "compile"
+        try:
+            min_hours = float(os.environ.get("WIKI_MIN_INTERVAL_HOURS", "0").strip() or "0")
+        except ValueError:
+            min_hours = 0.0
+        host = os.environ.get("MIRROR_HOST", "https://qmd-mirror.pages.dev").strip() or "https://qmd-mirror.pages.dev"
+        return cls(
+            corpus_root=corpus_root,
+            wiki_enabled=enabled,
+            wiki_mode=mode,
+            wiki_min_interval_hours=min_hours,
+            mirror_host=host,
+        )
 
 
 def run_once(
@@ -140,37 +181,23 @@ if __name__ == "__main__":
         return 0
 
     def wiki_runner():
-        # Wiki synthesis after embed: llmwiki compile over newly ingested Units → corpus/wiki/
-        # Per research #8 + spec.md:141-157 + ADR-0006/0008 — Workers AI via OPENAI_BASE_URL
-        # Uses scripts.wiki wrapper which handles provider-guard, budget, concurrency, SHA state
-        # Failure is isolated — missing key/outage logs, pipeline still completes, no raw Units rewritten
-        # Frequency knob (spec.md:150 "compile frequency configurable"): WIKI_ENABLED=0 skips,
-        # WIKI_MIN_INTERVAL_HOURS defers reruns, WIKI_MODE=refresh uses refresh --stale.
-        enabled = os.environ.get("WIKI_ENABLED", "1").strip().lower()
-        if enabled in ("0", "false", "no", "off"):
+        # Wiki synthesis after embed — config locality via OrchestratorConfig (issue #22).
+        cfg = OrchestratorConfig.from_env(corpus_root)
+        if not cfg.wiki_enabled:
             logger.info("Wiki compile skipped — WIKI_ENABLED=0 (frequency knob)")
             return 0
         try:
-            interval_raw = os.environ.get("WIKI_MIN_INTERVAL_HOURS", "0").strip() or "0"
-            try:
-                min_hours = float(interval_raw)
-            except ValueError:
-                min_hours = 0.0
-            if min_hours > 0:
-                from pathlib import Path as _P
-
-                # State lives at corpus.parent/.llmwiki/state.json by convention (repo root)
-                # For default corpus=corpus, check .llmwiki/state.json mtime
-                state_file = _P(".llmwiki/state.json")
+            if cfg.wiki_min_interval_hours > 0:
+                state_file = cfg.wiki_state_file
                 if state_file.exists():
                     import time
 
                     age_h = (time.time() - state_file.stat().st_mtime) / 3600.0
-                    if age_h < min_hours:
+                    if age_h < cfg.wiki_min_interval_hours:
                         logger.info(
                             "Wiki compile skipped — last compile %.1fh ago < WIKI_MIN_INTERVAL_HOURS=%.1f",
                             age_h,
-                            min_hours,
+                            cfg.wiki_min_interval_hours,
                         )
                         return 0
         except Exception as e:
@@ -179,8 +206,7 @@ if __name__ == "__main__":
         try:
             from scripts.wiki import compile_wiki, refresh_stale
 
-            mode = os.environ.get("WIKI_MODE", "compile").strip().lower()
-            if mode in ("refresh", "stale", "refresh --stale"):
+            if cfg.wiki_mode in ("refresh", "stale", "refresh --stale"):
                 result = refresh_stale(corpus_root)
             else:
                 result = compile_wiki(corpus_root)
@@ -202,9 +228,10 @@ if __name__ == "__main__":
             logger.warning("MIRROR_TOKEN not set and mirror-token.txt missing — skipping mirror build (isolated)")
             return 0
 
-        host = os.environ.get("MIRROR_HOST", "https://qmd-mirror.pages.dev")
+        cfg = OrchestratorConfig.from_env(corpus_root)
+        host = cfg.mirror_host
         try:
-            dist = Path("dist")
+            dist = cfg.dist_dir
             build_mirror(corpus_root, dist, token, host)
             logger.info("Mirror built to %s with token %s... host %s", dist, token[:6], host)
         except Exception as e:
