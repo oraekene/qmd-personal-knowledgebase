@@ -1,0 +1,62 @@
+# QMD Collections Configuration — example for #20 Wiki synthesis (Workers AI)
+# Copy to ~/.config/qmd/index.yml (global) or .qmd/index.yml (project-local, gitignored),
+# or run scripts/register_qmd_collections.sh to `qmd collection add` each silo.
+# Per spec.md:82-86 + 141-147 + docs/adr/0001/0006: silos map 1:1 to QMD collections,
+# wiki is a derived QMD collection (corpus/wiki) and primary Mirror surface.
+#
+# After `qmd update && qmd embed`, `qmd query --collection wiki "nebula"` returns
+# wiki pages; unified `qmd query "nebula"` returns wiki + raw hits.
+
+global_context: "Personal knowledgebase — GitHub, chats, notes, PDFs, web fetches, compiled wiki. Wiki pages cite raw Units with ^[path:START-END] and link via [[wikilinks]]."
+
+collections:
+  github:
+    path: corpus/github
+    pattern: "**/*.md"
+    context:
+      "/": "GitHub repos (owned/forked/starred, two-account deduped)"
+
+  chats:
+    path: corpus/chats
+    pattern: "**/*.md"
+    context:
+      "/": "AI chat sessions (Inbox ZIP drops)"
+      "/claude": "Claude sessions"
+      "/chatgpt": "ChatGPT sessions"
+      "/gemini": "Gemini sessions"
+      "/qwen": "Qwen sessions"
+      "/zai": "Z.ai sessions"
+      "/deepseek": "DeepSeek sessions"
+
+  twitter:
+    path: corpus/twitter
+    pattern: "**/*.md"
+    context:
+      "/": "X bookmarks (cookie scrape + manual export bootstrap)"
+
+  notes:
+    path: corpus/notes
+    pattern: "**/*.md"
+    context:
+      "/": "Quick captures (Simplenote, Keep)"
+      "/simplenote": "Simplenote notes"
+      "/keep": "Google Keep notes (Takeout)"
+
+  pdfs:
+    path: corpus/pdfs
+    pattern: "**/*.md"
+    context:
+      "/": "PDFs parsed locally via LiteParse"
+
+  web:
+    path: corpus/web
+    pattern: "**/*.md"
+    context:
+      "/": "Fetched pages one level deep (TinyFish primary, Scrapling fallback)"
+
+  wiki:
+    path: corpus/wiki
+    pattern: "**/*.md"
+    context:
+      "/": "Wiki synthesis (llm-wiki-compiler on Workers AI) — interlinked, citation-traceable, primary Mirror surface"
+      "/concepts": "Concept pages citing raw Units"

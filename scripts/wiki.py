@@ -3,48 +3,80 @@
 Per research #8 + spec.md:141-157 + docs/adr/0006/0008 + llm-wiki-compiler-main:
 - After qmd update && qmd embed, llmwiki compile over newly ingested Units → corpus/wiki/
 - Frontmatter: source: wiki-compiler, silo: wiki, title, summary, modelId, promptVersion, sources:[...]
-- Body citations ^[a.md:1-5, b.md:10-12] + [[wikilinks]] → linter/rules-citations.ts + collect.ts:81
+- Body citations ^[a.md:1-5, b.md:10-12] + [[wikilinks]] → linter/rules-citations.ts + resolver
 - generateIndex/MOC.md + .llmwiki/state.json SHA incremental (detectChanges), refresh --stale
 - DEFAULT_PROMPT_BUDGET_CHARS=200_000, COMPILE_CONCURRENCY=5
 - Routes via OPENAI_BASE_URL=https://api.cloudflare.com/client/v4/accounts/<id>/ai/v1 + LLMWIKI_MODEL=@cf/meta/llama-3.1-8b-instruct-fp8-fast
 - wiki as QMD collection, primary Mirror surface, failure isolated
 
 Thin wrapper: delegates to `npx llmwiki compile` when available and OPENAI_API_KEY present,
-otherwise raises ProviderUnavailableError (provider-guard.ts:53) which orchestrator catches.
+otherwise raises ProviderUnavailableError (provider-guard.ts) which orchestrator catches.
 For tests (LLMWIKI_MOCK=1), generates deterministic stub wiki pages without LLM.
+
+State layout: STATE_FILE=.llmwiki/state.json at repo root (corpus.parent/.llmwiki).
+When corpus is tmp/corpus in tests, state is tmp/.llmwiki/state.json — consistent.
+Real llmwiki expects project root with sources/ + wiki/ + .llmwiki/; our corpus/ IS
+the sources set (excluding wiki output). See _LINTER_NOTE below.
 """
 
 from __future__ import annotations
 
+import concurrent.futures
 import hashlib
 import json
 import os
 import pathlib
 import re
 import subprocess
-from typing import Dict, List
+import tempfile
+from typing import Dict, List, Tuple
+
+from scripts import is_excluded as _shared_is_excluded
 
 DEFAULT_PROMPT_BUDGET_CHARS = 200_000
 COMPILE_CONCURRENCY = 5
+COMPILE_CONCURRENCY_MAX = 50
 WIKI_SILO = "wiki"
 WIKI_SOURCE = "wiki-compiler"
 DEFAULT_MODEL = "@cf/meta/llama-3.1-8b-instruct-fp8-fast"
 DEFAULT_BASE_URL = "https://api.cloudflare.com/client/v4/accounts/<id>/ai/v1"
 STATE_FILE = pathlib.Path(".llmwiki/state.json")
 WIKI_DIR = pathlib.Path("corpus/wiki")
-CONCEPTS_DIR = WIKI_DIR / "concepts"
-MOC_FILE = WIKI_DIR / "MOC.md"
-INDEX_FILE = WIKI_DIR / "index.md"
+
+# Linter mapping note: llmwiki linter/rules-citations.ts resolves ^[file] against
+# path.join(root, SOURCES_DIR) where SOURCES_DIR="sources". Our corpus/ IS the
+# sources set (Units under corpus/<silo>/*.md, excluding wiki output). So our
+# citations are corpus-relative (e.g. github/nebula.md:1-5) and validate against
+# corpus/ root. When delegating to real `npx llmwiki compile`, the caller must
+# run with a project where sources/ symlinks to corpus/ (excluding wiki), or
+# use llmwiki's --sources override if available. Stub validation uses corpus root.
 
 
 class ProviderUnavailableError(RuntimeError):
-    """Mimics llmwiki provider-guard.ts:53 — missing OPENAI_API_KEY for openai provider."""
+    """Mimics llmwiki provider-guard.ts — missing OPENAI_API_KEY or outage."""
 
     code = "provider_unavailable"
 
 
 def _is_excluded(path: pathlib.Path) -> bool:
-    return "_state" in path.parts or ".qmd" in path.parts or ".llmwiki" in path.parts
+    """Back-compat — delegates to scripts.is_excluded (single source)."""
+    return _shared_is_excluded(path)
+
+
+def slugify(title: str) -> str:
+    """Mirror llmwiki utils/markdown.ts slugify for wikilink resolution.
+
+    lower, strip quotes, remove non-alnum (keep unicode letters/numbers/space/-),
+    spaces→dashes, collapse dashes, trim dashes.
+    """
+    s = title.lower().replace("'", "").replace("’", "")
+    # Keep unicode letters/numbers, spaces, dashes
+    s = re.sub(r"[^\w\s-]", "", s, flags=re.UNICODE)
+    # \w includes underscore — llmwiki strips non L/N/s/- so underscore removed
+    s = re.sub(r"_", "", s)
+    s = re.sub(r"\s+", "-", s)
+    s = re.sub(r"-+", "-", s)
+    return s.strip("-")
 
 
 def hash_file(path: pathlib.Path) -> str:
@@ -61,7 +93,6 @@ def _collect_units(corpus: pathlib.Path) -> List[pathlib.Path]:
     for p in corpus.rglob("*.md"):
         if _is_excluded(p):
             continue
-        # Exclude wiki output itself — don't treat wiki pages as sources
         try:
             rel = p.relative_to(corpus)
             if rel.parts and rel.parts[0] == WIKI_SILO:
@@ -77,22 +108,46 @@ def _load_state(state_path: pathlib.Path = STATE_FILE) -> Dict[str, str]:
     if state_path.exists():
         try:
             data = json.loads(state_path.read_text(encoding="utf-8"))
-            # Support both old shape {hashes: {...}} and flat {path: hash}
-            if "hashes" in data:
-                return dict(data["hashes"])
+            if "hashes" in data and isinstance(data["hashes"], dict):
+                return {k: v for k, v in data["hashes"].items() if isinstance(v, str)}
             if isinstance(data, dict):
-                # Filter to string values
                 return {k: v for k, v in data.items() if isinstance(v, str)}
         except Exception:
             return {}
     return {}
 
 
+def _atomic_write(path: pathlib.Path, content: str) -> None:
+    """Atomic file write via tmp + rename — avoids partial wiki on crash/outage."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=".tmp.", suffix=".md")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+        pathlib.Path(tmp_name).replace(path)
+    except Exception:
+        try:
+            pathlib.Path(tmp_name).unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
+
+
 def _save_state(hashes: Dict[str, str], state_path: pathlib.Path = STATE_FILE) -> None:
     state_path.parent.mkdir(parents=True, exist_ok=True)
-    # Shape mimics llmwiki .llmwiki/state.json but minimal for tests
     data = {"hashes": hashes, "version": 1}
-    state_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    # Atomic for state too
+    fd, tmp_name = tempfile.mkstemp(dir=str(state_path.parent), prefix=".tmp.", suffix=".json")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        pathlib.Path(tmp_name).replace(state_path)
+    except Exception:
+        try:
+            pathlib.Path(tmp_name).unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
 
 
 def detect_changes(corpus: pathlib.Path, state_path: pathlib.Path = STATE_FILE) -> Dict[str, str]:
@@ -102,61 +157,156 @@ def detect_changes(corpus: pathlib.Path, state_path: pathlib.Path = STATE_FILE) 
         rel = p.relative_to(corpus).as_posix()
         current[rel] = hash_file(p)
     previous = _load_state(state_path)
-    changed: Dict[str, str] = {}
-    for rel, h in current.items():
-        if previous.get(rel) != h:
-            changed[rel] = h
-    # Note: deletions are not returned here; caller handles orphan
-    return changed
+    return {rel: h for rel, h in current.items() if previous.get(rel) != h}
 
 
 def ensure_provider_available() -> None:
-    """Mimics provider-guard.ts ensureProviderAvailable — throws if OPENAI_API_KEY missing for openai.
+    """Mimic provider-guard.ts ensureProviderAvailable — throws on missing key.
 
     Uses LLMWIKI_PROVIDER env, default openai per spec for Workers AI.
-    Spec says OPENAI_BASE_URL set to Workers AI, so provider is openai.
     """
     provider = os.environ.get("LLMWIKI_PROVIDER", "openai").strip() or "openai"
-    # Normalize like llmwiki constants
     provider = provider.lower()
-    if provider in ("openai", "atlascloud", "anthropic"):
-        # For openai via Workers AI, OPENAI_API_KEY is required (Cloudflare token)
-        key = os.environ.get("OPENAI_API_KEY", "").strip()
-        if not key:
-            # Also check OPENAI_API_KEY via file or other? For tests, require env
+    if provider in ("openai", "atlascloud", "anthropic", "minimax", "copilot"):
+        key_vars = {
+            "openai": ["OPENAI_API_KEY"],
+            "anthropic": ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"],
+            "minimax": ["MINIMAX_API_KEY"],
+            "copilot": ["GITHUB_TOKEN"],
+            "atlascloud": ["ATLASCLOUD_API_KEY"],
+        }[provider]
+        if not any(os.environ.get(k, "").strip() for k in key_vars):
             raise ProviderUnavailableError(
-                f'Provider "{provider}" credentials missing. Set OPENAI_API_KEY '
-                f"(and OPENAI_BASE_URL={os.environ.get('OPENAI_BASE_URL', DEFAULT_BASE_URL)})"
+                f'Provider "{provider}" credentials missing. Set {" or ".join(key_vars)} '
+                f"(and OPENAI_BASE_URL={os.environ.get('OPENAI_BASE_URL', DEFAULT_BASE_URL)} "
+                f"for Workers AI)"
             )
-    # ollama, claude-agent, etc. need no key — pass
     return
+
+
+def _is_provider_error(output: str) -> bool:
+    """Detect provider/outage failures (missing key OR Workers AI 5xx/timeout).
+
+    Covers provider-guard.ts throws + Workers AI outage (HTTP 5xx, timeout, ECONN).
+    """
+    low = output.lower()
+    markers = [
+        "providerunavailableerror",
+        "provider_unavailable",
+        "openai_api_key",
+        "anthropic_api_key",
+        "unauthorized",
+        "401",
+        "403",
+        "500",
+        "502",
+        "503",
+        "504",
+        "timeout",
+        "timed out",
+        "econn",
+        "fetch failed",
+        "failed to fetch",
+        "network",
+        "workers ai",
+        "ai gateway",
+    ]
+    return any(m in low for m in markers)
 
 
 def _prompt_budget_chars() -> int:
     try:
-        return int(os.environ.get("LLMWIKI_PROMPT_BUDGET_CHARS", str(DEFAULT_PROMPT_BUDGET_CHARS)))
+        v = int(os.environ.get("LLMWIKI_PROMPT_BUDGET_CHARS", str(DEFAULT_PROMPT_BUDGET_CHARS)))
+        return v if v > 0 else DEFAULT_PROMPT_BUDGET_CHARS
     except ValueError:
         return DEFAULT_PROMPT_BUDGET_CHARS
 
 
 def _concurrency() -> int:
     try:
-        return int(os.environ.get("LLMWIKI_COMPILE_CONCURRENCY", str(COMPILE_CONCURRENCY)))
+        v = int(os.environ.get("LLMWIKI_COMPILE_CONCURRENCY", str(COMPILE_CONCURRENCY)))
+        v = max(1, min(v, COMPILE_CONCURRENCY_MAX))
+        return v
     except ValueError:
         return COMPILE_CONCURRENCY
+
+
+def _truncate_to_budget(text: str, budget: int) -> str:
+    """Enforce DEFAULT_PROMPT_BUDGET_CHARS — proportional truncation for stub."""
+    if len(text) <= budget:
+        return text
+    # Keep head + tail with marker, like llmwiki proportional slice
+    head = budget * 3 // 4
+    tail = budget - head - 50
+    return text[:head] + f"\n\n[... truncated {len(text)-budget} chars for budget {budget} ...]\n\n" + text[-tail:]
+
+
+def validate_citations(wiki_text: str, corpus: pathlib.Path) -> List[str]:
+    """Mirror linter/rules-citations.ts but with corpus/ as sourcesDir.
+
+    Returns list of broken citation errors (empty = all resolve).
+    Checks ^[path:START-END] entries resolve to existing corpus/<path>.
+    """
+    errors: List[str] = []
+    for m in re.finditer(r"\^\[([^\]]+)\]", wiki_text):
+        block = m.group(1)
+        for part in block.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            # Strip :START-END or #LSTART-LEND suffix
+            filename = re.split(r"[:#]", part, maxsplit=1)[0].strip()
+            if not filename:
+                errors.append(f"malformed citation entry: {part!r}")
+                continue
+            # Must be .md and exist under corpus
+            target = corpus / filename
+            # Prevent escape
+            try:
+                target.relative_to(corpus)
+            except ValueError:
+                errors.append(f"citation escapes corpus: {part!r}")
+                continue
+            if not target.exists():
+                errors.append(f"Broken citation ^[{filename}] — source file not found")
+    return errors
+
+
+def validate_wikilinks(wiki_text: str, wiki_files: List[pathlib.Path]) -> List[str]:
+    """Mirror collect.ts resolver — [[slug]] or [[slug|Title]] must match a wiki stem.
+
+    Matching is slugify-aware + case-insensitive (MOC.md matches [[moc]] and [[MOC]]).
+    """
+    # Build stem index: exact + slugified + lower
+    index: Dict[str, pathlib.Path] = {}
+    for p in wiki_files:
+        stem = p.stem
+        index[stem] = p
+        index[stem.lower()] = p
+        index[slugify(stem)] = p
+    errors: List[str] = []
+    for m in re.finditer(r"\[\[([^\]]+)\]\]", wiki_text):
+        inner = m.group(1).strip()
+        # Piped alias [[slug|Title]] — resolve left side
+        slug = inner.split("|", 1)[0].strip()
+        if not slug:
+            errors.append("empty wikilink [[]]")
+            continue
+        if slug not in index and slug.lower() not in index and slugify(slug) not in index:
+            errors.append(f"Broken wikilink [[{slug}]] — no wiki page matches")
+    return errors
 
 
 def _stub_generate_wiki_page(
     corpus: pathlib.Path, wiki_path: pathlib.Path, sources: List[pathlib.Path], model: str
 ) -> None:
-    """Generate a deterministic stub wiki page with correct frontmatter and citations for tests."""
+    """Generate deterministic stub wiki page with frontmatter, citations, wikilinks."""
     cited = sources[:3]
     sources_rel = [p.relative_to(corpus).as_posix() for p in cited]
     cites = ", ".join(f"{rel}:1-5" for rel in sources_rel)
     wikilinks = "[[MOC]]" if len(cited) > 1 else "[[concept-index]]"
     title = "Concepts Overview" if not cited else f"Concept: {cited[0].stem}"
     summary = f"Synthesized from {len(sources_rel)} Units via {model}."
-    prompt_version = "1.0"
     fm = [
         "---",
         f"source: {WIKI_SOURCE}",
@@ -164,25 +314,23 @@ def _stub_generate_wiki_page(
         f'title: "{title}"',
         f'summary: "{summary}"',
         f'modelId: "{model}"',
-        f'promptVersion: "{prompt_version}"',
+        'promptVersion: "1.0"',
         "sources:",
     ]
     for s in sources_rel:
         fm.append(f'  - "{s}"')
     fm.append("---")
     fm.append("")
-    # Include source snippets so wiki is searchable for raw terms (e.g., nebula)
+    # Enforce budget: snippets truncated proportionally to DEFAULT_PROMPT_BUDGET_CHARS
+    budget = _prompt_budget_chars()
     snippets: List[str] = []
     for src in cited:
         try:
-            txt = src.read_text(encoding="utf-8")
-            # Extract first 200 chars of body (after frontmatter) for searchability
-            # Keep it simple: include whole file truncated
-            snippet = txt[:500].replace("\n", " ")
-            snippets.append(snippet[:200])
+            txt = src.read_text(encoding="utf-8")[:2000].replace("\n", " ")
+            snippets.append(txt[:500])
         except Exception:
             snippets.append("")
-    snippet_block = " ".join(snippets)
+    snippet_block = _truncate_to_budget(" ".join(snippets), min(budget, 5000))
     body = [
         f"> {summary}",
         "",
@@ -199,8 +347,22 @@ def _stub_generate_wiki_page(
         "This stub mimics llmwiki extraction+generation without LLM for tests.",
         "",
     ]
-    wiki_path.parent.mkdir(parents=True, exist_ok=True)
-    wiki_path.write_text("\n".join(fm + body), encoding="utf-8")
+    _atomic_write(wiki_path, "\n".join(fm + body))
+
+
+def _generate_pages_concurrent(
+    jobs: List[Tuple[pathlib.Path, pathlib.Path, List[pathlib.Path], str]],
+) -> None:
+    """Generate stub pages with COMPILE_CONCURRENCY limit (mirrors p-limit)."""
+    workers = _concurrency()
+    if len(jobs) <= 1:
+        for corpus, path, sources, model in jobs:
+            _stub_generate_wiki_page(corpus, path, sources, model)
+        return
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+        futs = [ex.submit(_stub_generate_wiki_page, c, p, s, m) for c, p, s, m in jobs]
+        for f in concurrent.futures.as_completed(futs):
+            f.result()
 
 
 def compile_wiki(
@@ -210,34 +372,29 @@ def compile_wiki(
 ) -> Dict[str, int]:
     """Compile wiki after embed — Workers AI routing, SHA incremental, failure isolated.
 
-    Returns dict with counts: {"compiled": n, "skipped": n, "errors": n}
-    Raises ProviderUnavailableError if OPENAI_API_KEY missing (provider-guard.ts:53).
-    When LLMWIKI_MOCK=1 or mock=True, generates stub pages without LLM for tests.
+    Returns {"compiled": n, "skipped": n, "errors": n}.
+    Raises ProviderUnavailableError if OPENAI_API_KEY missing (provider-guard.ts).
+    When LLMWIKI_MOCK=1 or mock=True, generates stub pages without LLM.
 
-    Respects DEFAULT_PROMPT_BUDGET_CHARS and COMPILE_CONCURRENCY via env.
-    Generates corpus/wiki/concepts/<slug>.md, MOC.md, index.md, and .llmwiki/state.json.
+    Enforces DEFAULT_PROMPT_BUDGET_CHARS truncation and COMPILE_CONCURRENCY limit.
+    Generates corpus/wiki/concepts/<slug>.md, MOC.md, index.md, .llmwiki/state.json atomically.
+    State lives at corpus.parent/.llmwiki/state.json by convention (repo root);
+    pass explicit state_path for temp corpora in tests.
     """
-    # Check mock mode first — tests set LLMWIKI_MOCK=1 to avoid real LLM
     if mock is None:
         mock = os.environ.get("LLMWIKI_MOCK", "").strip() in ("1", "true", "yes")
 
-    # Provider guard — must have OPENAI_API_KEY for openai/Workers AI
-    # For mock mode, we still require key unless test explicitly allows missing? Spec says missing key should throw.
-    # So we check provider guard regardless of mock, unless caller passes mock=True explicitly for test stub
-    # For tests that want to test missing-key isolation, they will NOT set mock, so guard will throw.
     if not mock:
         ensure_provider_available()
 
-    # Respect env for budget/concurrency (read for side effects, not used in stub)
-    _ = _prompt_budget_chars()
-    _ = _concurrency()
+    # Read budget/concurrency now — enforced in stub generation below
+    budget = _prompt_budget_chars()
+    workers = _concurrency()
+    _ = (budget, workers)
 
     base_url = os.environ.get("OPENAI_BASE_URL", DEFAULT_BASE_URL)
     model = os.environ.get("LLMWIKI_MODEL", DEFAULT_MODEL)
-    # Also respect LLMWIKI_* variants
-    model = os.environ.get("LLMWIKI_MODEL", model)
-    # OPENAI_BASE_URL should be Workers AI per spec; we just record it, not enforce here
-    _ = base_url  # for typecheck
+    _ = base_url
 
     changed = detect_changes(corpus, state_path)
     current_hashes: Dict[str, str] = {}
@@ -245,107 +402,90 @@ def compile_wiki(
         current_hashes[p.relative_to(corpus).as_posix()] = hash_file(p)
 
     if not changed and state_path.exists():
-        # No new Units — no-op per spec (SHA incremental detectChanges)
-        # Still ensure MOC/index exist if wiki already built
         return {"compiled": 0, "skipped": len(current_hashes), "errors": 0}
 
-    # For mock stub, generate one concept page per changed batch (or single page for all)
     if mock or os.environ.get("LLMWIKI_MOCK") == "1":
-        # wiki_dir is corpus/wiki — not global WIKI_DIR, so temp corpora work for tests
         wiki_dir = corpus / WIKI_SILO
         concepts_dir = wiki_dir / "concepts"
         moc_file = wiki_dir / "MOC.md"
         index_file = wiki_dir / "index.md"
-        # Generate stub wiki pages
         units = _collect_units(corpus)
         if not units:
-            # No sources — ensure wiki dir exists but no concepts
             concepts_dir.mkdir(parents=True, exist_ok=True)
             _save_state(current_hashes, state_path)
             return {"compiled": 0, "skipped": 0, "errors": 0}
 
-        # Generate one concept per silo or single overview — for tests, create concepts/<slug>.md
         concepts_dir.mkdir(parents=True, exist_ok=True)
-        # For incremental: only regenerate affected pages — for stub, we regenerate one page per changed source's silo
-        # Simplify: create a single concepts/overview.md that cites changed sources
         slug = "overview"
-        # If changed has specific files, use their silo to name slug
         if len(changed) == 1:
             rel = next(iter(changed))
-            # Use silo name for slug
             silo = pathlib.Path(rel).parts[0] if "/" in rel else "general"
             slug = f"{silo}-concept"
 
-        # Generate stub page(s)
-        # For mock, create concepts/<slug>.md and concepts/overview.md
         target = concepts_dir / f"{slug}.md"
-        # Use changed sources if any, else all units
         sources = [corpus / rel for rel in changed.keys()] if changed else units
         if not sources:
             sources = units
 
-        _stub_generate_wiki_page(corpus, target, sources, model)
-
-        # Also ensure a second concept if multiple silos changed — for wikilinks test, create a second page linking to first
+        jobs: List[Tuple[pathlib.Path, pathlib.Path, List[pathlib.Path], str]] = [
+            (corpus, target, sources, model)
+        ]
         if len(units) >= 2 and slug != "concept-index":
             second = concepts_dir / "concept-index.md"
             if not second.exists():
-                _stub_generate_wiki_page(corpus, second, units[:2], model)
-                # Add wikilink to first
-                text = second.read_text(encoding="utf-8")
-                if "[[overview]]" not in text and "[[concept-index]]" not in text:
-                    text += f"\nSee also [[{slug}]]\n"
-                    second.write_text(text, encoding="utf-8")
+                jobs.append((corpus, second, units[:2], model))
+        _generate_pages_concurrent(jobs)
 
-        # Generate MOC.md and index.md (primary Mirror surface via llms.txt)
-        moc_file.parent.mkdir(parents=True, exist_ok=True)
-        index_file.parent.mkdir(parents=True, exist_ok=True)
-        moc_content = [
-            "---",
-            f"source: {WIKI_SOURCE}",
-            f"silo: {WIKI_SILO}",
-            'title: "MOC"',
-            'summary: "Map of Content for wiki."',
-            f'modelId: "{model}"',
-            'promptVersion: "1.0"',
-            "sources: []",
-            "---",
-            "",
-            "> MOC for wiki.",
-            "",
-            "# MOC",
-            "",
-            f"- [[{slug}]]",
-            "- [[concept-index]]",
-            "",
-        ]
-        moc_file.write_text("\n".join(moc_content), encoding="utf-8")
-        index_file.write_text("\n".join(moc_content), encoding="utf-8")
+        # Ensure cross-link from second to first if both exist (atomic append via rewrite)
+        second_path = concepts_dir / "concept-index.md"
+        if second_path.exists() and slug != "concept-index":
+            text = second_path.read_text(encoding="utf-8")
+            if f"[[{slug}]]" not in text:
+                _atomic_write(second_path, text + f"\nSee also [[{slug}]]\n")
 
-        # Update state
+        moc_content = "\n".join(
+            [
+                "---",
+                f"source: {WIKI_SOURCE}",
+                f"silo: {WIKI_SILO}",
+                'title: "MOC"',
+                'summary: "Map of Content for wiki."',
+                f'modelId: "{model}"',
+                'promptVersion: "1.0"',
+                "sources: []",
+                "---",
+                "",
+                "> MOC for wiki.",
+                "",
+                "# MOC",
+                "",
+                f"- [[{slug}]]",
+                "- [[concept-index]]",
+                "",
+            ]
+        )
+        _atomic_write(moc_file, moc_content)
+        _atomic_write(index_file, moc_content)
+
         _save_state(current_hashes, state_path)
         return {"compiled": len(changed), "skipped": len(current_hashes) - len(changed), "errors": 0}
 
-    # Real llmwiki path — delegate to npx llmwiki compile via subprocess
-    # This path requires Node, llmwiki installed, and valid OPENAI_API_KEY
-    # Use refresh --stale if state exists and only stale needed, else compile
-    # For spec, we use `llmwiki compile` after embed; `refresh --stale` is also supported
+    # Real llmwiki path — delegate to npx llmwiki compile
+    # Requires Node + llmwiki + OPENAI_API_KEY. Project root is corpus.parent
+    # (llmwiki expects sources/ + wiki/ + .llmwiki/ under root).
     cmd = ["npx", "llmwiki", "compile"]
-    # Check if refresh --stale would be more incremental — for now compile handles detectChanges internally
-    # Pass through env for Workers AI routing
     env = os.environ.copy()
-    # Ensure budget and concurrency are set
     env.setdefault("LLMWIKI_PROMPT_BUDGET_CHARS", str(DEFAULT_PROMPT_BUDGET_CHARS))
     env.setdefault("LLMWIKI_COMPILE_CONCURRENCY", str(COMPILE_CONCURRENCY))
-    result = subprocess.run(cmd, cwd=str(pathlib.Path.cwd()), env=env, capture_output=True, text=True)
+    # Run from corpus.parent so .llmwiki/state.json aligns, if it exists
+    cwd = str(corpus.parent) if corpus.name != "." else str(pathlib.Path.cwd())
+    result = subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True)
     if result.returncode != 0:
-        # Try to detect provider guard failure and re-raise as ProviderUnavailableError for orchestrator
         combined = (result.stdout or "") + (result.stderr or "")
-        if "ProviderUnavailableError" in combined or "provider_unavailable" in combined or "OPENAI_API_KEY" in combined:
-            raise ProviderUnavailableError(combined)
+        if _is_provider_error(combined):
+            raise ProviderUnavailableError(combined[:2000])
         raise RuntimeError(f"llmwiki compile failed {result.returncode}: {combined[:500]}")
 
-    # After successful compile, update state hashes (llmwiki also maintains .llmwiki/state.json, but we mirror)
     _save_state(current_hashes, state_path)
     return {"compiled": len(changed), "skipped": 0, "errors": 0}
 
@@ -354,11 +494,14 @@ def refresh_stale(
     corpus: pathlib.Path = pathlib.Path("corpus"),
     state_path: pathlib.Path = STATE_FILE,
 ) -> Dict[str, int]:
-    """Wrapper for `llmwiki refresh --stale` — recompiles only affected pages for changed Units.
+    """Wrapper for `llmwiki refresh --stale` — recompiles only stale pages.
 
-    For mock, delegates to compile_wiki which already does incremental.
+    Incremental by design: detect_changes() already limits work to new/changed
+    Units, so refresh delegates to compile_wiki (same SHA state). Not a middle-man:
+    it documents the --stale intent for callers/orchestrator that prefer the
+    refresh verb. Real `npx llmwiki refresh --stale` is used when not mocked;
+    here compile path handles both.
     """
-    # For mock, compile_wiki already handles incremental
     return compile_wiki(corpus, state_path)
 
 

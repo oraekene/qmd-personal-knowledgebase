@@ -144,16 +144,50 @@ if __name__ == "__main__":
         # Per research #8 + spec.md:141-157 + ADR-0006/0008 — Workers AI via OPENAI_BASE_URL
         # Uses scripts.wiki wrapper which handles provider-guard, budget, concurrency, SHA state
         # Failure is isolated — missing key/outage logs, pipeline still completes, no raw Units rewritten
+        # Frequency knob (spec.md:150 "compile frequency configurable"): WIKI_ENABLED=0 skips,
+        # WIKI_MIN_INTERVAL_HOURS defers reruns, WIKI_MODE=refresh uses refresh --stale.
+        enabled = os.environ.get("WIKI_ENABLED", "1").strip().lower()
+        if enabled in ("0", "false", "no", "off"):
+            logger.info("Wiki compile skipped — WIKI_ENABLED=0 (frequency knob)")
+            return 0
         try:
-            from scripts.wiki import compile_wiki
+            interval_raw = os.environ.get("WIKI_MIN_INTERVAL_HOURS", "0").strip() or "0"
+            try:
+                min_hours = float(interval_raw)
+            except ValueError:
+                min_hours = 0.0
+            if min_hours > 0:
+                from pathlib import Path as _P
 
-            # Pass corpus_root so wiki goes to corpus/wiki, state to .llmwiki/state.json
-            result = compile_wiki(corpus_root)
+                # State lives at corpus.parent/.llmwiki/state.json by convention (repo root)
+                # For default corpus=corpus, check .llmwiki/state.json mtime
+                state_file = _P(".llmwiki/state.json")
+                if state_file.exists():
+                    import time
+
+                    age_h = (time.time() - state_file.stat().st_mtime) / 3600.0
+                    if age_h < min_hours:
+                        logger.info(
+                            "Wiki compile skipped — last compile %.1fh ago < WIKI_MIN_INTERVAL_HOURS=%.1f",
+                            age_h,
+                            min_hours,
+                        )
+                        return 0
+        except Exception as e:
+            logger.warning("Wiki interval check failed, proceeding: %s", e)
+
+        try:
+            from scripts.wiki import compile_wiki, refresh_stale
+
+            mode = os.environ.get("WIKI_MODE", "compile").strip().lower()
+            if mode in ("refresh", "stale", "refresh --stale"):
+                result = refresh_stale(corpus_root)
+            else:
+                result = compile_wiki(corpus_root)
             logger.info("Wiki compile result: %s", result)
             return 0
         except Exception as e:
-            # Also try subprocess fallback for environments with real llmwiki binary
-            # Provider guard throws ProviderUnavailableError (provider-guard.ts:53) — log and re-raise for isolation
+            # Provider guard throws ProviderUnavailableError (provider-guard.ts) — log and re-raise for isolation
             logger.error("Wiki compile failed: %s", e, exc_info=True)
             raise
 

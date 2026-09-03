@@ -40,17 +40,21 @@ class MirrorToken(str):
 
 
 def _is_excluded(path: pathlib.Path) -> bool:
-    """Single helper for state/qmd exclusion — fixes Duplicated Code."""
-    return "_state" in path.parts or ".qmd" in path.parts
+    """Back-compat wrapper — delegates to scripts.is_excluded (single source)."""
+    from scripts import is_excluded
+
+    return is_excluded(path)
 
 
 def _collect_units(corpus: pathlib.Path) -> List[pathlib.Path]:
     """Collect markdown Units under corpus, sorted, excluding state/qmd."""
+    from scripts import is_excluded
+
     units: List[pathlib.Path] = []
     if not corpus.exists():
         return units
     for p in corpus.rglob("*.md"):
-        if _is_excluded(p):
+        if is_excluded(p):
             continue
         units.append(p)
     units.sort()
