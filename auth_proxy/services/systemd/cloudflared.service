@@ -1,0 +1,26 @@
+[Unit]
+Description=Cloudflare Tunnel for QMD (qmd.example.com -> 127.0.0.1:3210)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Remotely-managed: token from env file (never in unit file)
+EnvironmentFile=/etc/cloudflared/qmd-tunnel.env
+ExecStart=/usr/local/bin/cloudflared tunnel run --token ${TUNNEL_TOKEN}
+Restart=on-failure
+RestartSec=5
+StartLimitInterval=60
+StartLimitBurst=5
+# Sleep/wake: systemd will restart on network-online, QUIC reconnects within 20s
+# KeepAlive equivalent: Restart + no TimeoutStop
+TimeoutStartSec=30
+TimeoutStopSec=10
+
+# Hardening
+User=cloudflared
+Group=cloudflared
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

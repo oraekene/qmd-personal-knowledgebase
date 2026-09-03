@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Per #18 AC2: KeepAlive via launchd; survives sleep/wake, QUIC reconnect ~20s -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.qmd.cloudflared</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/cloudflared</string>
+    <string>tunnel</string>
+    <string>run</string>
+    <string>--token</string>
+    <string>__TUNNEL_TOKEN_FROM_ENV__</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>TUNNEL_TOKEN</key><string>__SET_VIA_LAUNCHCTL_ENV__</string>
+  </dict>
+  <key>KeepAlive</key>
+  <dict>
+    <key>NetworkState</key><true/>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>ThrottleInterval</key><integer>5</integer>
+  <key>StandardOutPath</key><string>/tmp/qmd-cloudflared.log</string>
+  <key>StandardErrorPath</key><string>/tmp/qmd-cloudflared.err</string>
+</dict>
+</plist>

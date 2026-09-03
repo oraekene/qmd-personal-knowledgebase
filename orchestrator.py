@@ -11,6 +11,8 @@ This is the production orchestrator for #15 — testable via run_once.
 """
 from __future__ import annotations
 import logging
+import os
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, List
@@ -24,6 +26,49 @@ DEFAULT_STATE_PATH = Path("corpus/_state/crawl_state.json")
 DEFAULT_CORPUS_ROOT = Path("corpus")
 
 
+@dataclass(frozen=True)
+class OrchestratorConfig:
+    """Single locality for pipeline knobs + Corpus-relative paths (issue #22).
+
+    Parses env once so wiki_runner/mirror_runner closures stop scattering
+    os.environ.get across the module. Paths resolve from corpus_root.
+    Note: MIRROR_TOKEN is deliberately NOT parsed here — it stays behind
+    load_mirror_token() so the secret never lands in a logged/repr'd config.
+    """
+
+    corpus_root: Path = DEFAULT_CORPUS_ROOT
+    wiki_enabled: bool = True
+    wiki_mode: str = "compile"
+    wiki_min_interval_hours: float = 0.0
+    mirror_host: str = "https://qmd-mirror.pages.dev"
+    dist_dir: Path = field(default_factory=lambda: Path("dist"))
+
+    @property
+    def wiki_state_file(self) -> Path:
+        from scripts.wiki import resolve_state_path
+
+        return resolve_state_path(self.corpus_root)
+
+    @classmethod
+    def from_env(cls, corpus_root: Path = DEFAULT_CORPUS_ROOT) -> "OrchestratorConfig":
+        enabled = os.environ.get("WIKI_ENABLED", "1").strip().lower() not in ("0", "false", "no", "off")
+        mode = os.environ.get("WIKI_MODE", "compile").strip().lower() or "compile"
+        try:
+            min_hours = float(os.environ.get("WIKI_MIN_INTERVAL_HOURS", "0").strip() or "0")
+        except ValueError:
+            min_hours = 0.0
+        host = os.environ.get("MIRROR_HOST", "https://qmd-mirror.pages.dev").strip() or "https://qmd-mirror.pages.dev"
+        dist_raw = os.environ.get("MIRROR_DIST", "dist").strip() or "dist"
+        return cls(
+            corpus_root=corpus_root,
+            wiki_enabled=enabled,
+            wiki_mode=mode,
+            wiki_min_interval_hours=min_hours,
+            mirror_host=host,
+            dist_dir=Path(dist_raw),
+        )
+
+
 def run_once(
     connectors: List,
     corpus_root: Path,
@@ -31,8 +76,9 @@ def run_once(
     qmd_runner: Callable[[], int],
     wiki_runner: Callable[[], int],
     now: datetime | None = None,
+    mirror_runner: Callable[[], int] | None = None,
 ) -> None:
-    """Run one orchestrator cycle: connectors -> single qmd -> isolated wiki.
+    """Run one orchestrator cycle: connectors -> single qmd -> isolated wiki -> isolated mirror.
 
     - connectors: list of SourcePlugin-like objects with NAME and fetch_recent(since)
     - corpus_root: Path("corpus")
@@ -40,6 +86,7 @@ def run_once(
     - qmd_runner: callable that does `qmd update && qmd embed`, returns exit code
     - wiki_runner: callable that does `llmwiki compile --stale`, may raise
     - now: for testing, fixed now; otherwise datetime.now(timezone.utc)
+    - mirror_runner: callable that does `build_mirror + wrangler deploy`, may raise, isolated
     """
     if now is None:
         now = datetime.now(timezone.utc)
@@ -92,6 +139,13 @@ def run_once(
     except Exception as e:
         logger.error("Wiki synthesis failed (isolated): %s", e, exc_info=True)
 
+    # Isolated mirror build + deploy — failure does not block indexing
+    if mirror_runner is not None:
+        try:
+            mirror_runner()
+        except Exception as e:
+            logger.error("Mirror build/deploy failed (isolated): %s", e, exc_info=True)
+
 
 if __name__ == "__main__":
     import argparse
@@ -106,9 +160,8 @@ if __name__ == "__main__":
 
     # Discovery — load all connectors from connectors/
     from connectors.sdk.discovery import load_plugins
-    from pathlib import Path as P
 
-    plugins = load_plugins(P("connectors"))
+    plugins = load_plugins(Path("connectors"))
     connectors = list(plugins.values())
     if args.source:
         connectors = [c for c in connectors if c.NAME == args.source]
@@ -116,8 +169,8 @@ if __name__ == "__main__":
             print(f"No connector named {args.source}")
             raise SystemExit(1)
 
-    corpus_root = P(args.corpus)
-    state_path = P(args.state)
+    corpus_root = Path(args.corpus)
+    state_path = Path(args.state)
 
     def qmd_runner():
         import subprocess
@@ -132,12 +185,76 @@ if __name__ == "__main__":
         return 0
 
     def wiki_runner():
+        # Wiki synthesis after embed — config locality via OrchestratorConfig (issue #22).
+        cfg = OrchestratorConfig.from_env(corpus_root)
+        if not cfg.wiki_enabled:
+            logger.info("Wiki compile skipped — WIKI_ENABLED=0 (frequency knob)")
+            return 0
+        try:
+            if cfg.wiki_min_interval_hours > 0:
+                state_file = cfg.wiki_state_file
+                if state_file.exists():
+                    import time
+
+                    age_h = (time.time() - state_file.stat().st_mtime) / 3600.0
+                    if age_h < cfg.wiki_min_interval_hours:
+                        logger.info(
+                            "Wiki compile skipped — last compile %.1fh ago < WIKI_MIN_INTERVAL_HOURS=%.1f",
+                            age_h,
+                            cfg.wiki_min_interval_hours,
+                        )
+                        return 0
+        except Exception as e:
+            logger.warning("Wiki interval check failed, proceeding: %s", e)
+
+        try:
+            from scripts.wiki import compile_wiki, refresh_stale
+
+            if cfg.wiki_mode in ("refresh", "stale", "refresh --stale"):
+                result = refresh_stale(corpus_root)
+            else:
+                result = compile_wiki(corpus_root)
+            logger.info("Wiki compile result: %s", result)
+            return 0
+        except Exception as e:
+            # Provider guard throws ProviderUnavailableError (provider-guard.ts) — log and re-raise for isolation
+            logger.error("Wiki compile failed: %s", e, exc_info=True)
+            raise
+
+    def mirror_runner():
         import subprocess
-        # Isolated synthesis: llmwiki compile --stale (or compile)
-        # Failure is isolated — log and continue
-        result = subprocess.run(["llmwiki", "compile", "--stale"], check=False)
+
+        # Reuse shared token loader — fixes Duplicated Code with scripts/build_mirror
+        from scripts.build_mirror import build_mirror, load_mirror_token
+
+        token = load_mirror_token()
+        if not token:
+            logger.warning("MIRROR_TOKEN not set and mirror-token.txt missing — skipping mirror build (isolated)")
+            return 0
+
+        cfg = OrchestratorConfig.from_env(corpus_root)
+        host = cfg.mirror_host
+        try:
+            dist = cfg.dist_dir
+            build_mirror(corpus_root, dist, token, host)
+            logger.info("Mirror built to %s with token %s... host %s", dist, token[:6], host)
+        except Exception as e:
+            logger.error("Mirror build failed: %s", e, exc_info=True)
+            raise
+
+        api_token = os.environ.get("CLOUDFLARE_API_TOKEN", "")
+        account_id = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "")
+        if not api_token or not account_id:
+            logger.info("Skipping wrangler deploy — CLOUDFLARE_API_TOKEN/ACCOUNT_ID not set (local build only)")
+            return 0
+
+        result = subprocess.run(
+            ["npx", "wrangler", "pages", "deploy", "dist", "--project-name", "qmd-mirror", "--branch", "main"],
+            check=False,
+        )
         if result.returncode != 0:
-            raise RuntimeError(f"llmwiki compile failed {result.returncode}")
+            raise RuntimeError(f"wrangler pages deploy failed {result.returncode}")
+        logger.info("Mirror deployed via wrangler pages deploy")
         return 0
 
-    run_once(connectors, corpus_root, state_path, qmd_runner, wiki_runner)
+    run_once(connectors, corpus_root, state_path, qmd_runner, wiki_runner, mirror_runner=mirror_runner)

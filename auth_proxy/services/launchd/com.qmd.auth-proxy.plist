@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.qmd.auth-proxy</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>-m</string>
+    <string>auth_proxy</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>AUTH_PROXY_TOKEN</key><string>__SET_VIA_LAUNCHCTL_ENV__</string>
+    <key>QMD_TARGET</key><string>http://127.0.0.1:8181</string>
+    <key>PROXY_PORT</key><string>3210</string>
+  </dict>
+  <key>KeepAlive</key><true/>
+  <key>RunAtLoad</key><true/>
+  <key>ThrottleInterval</key><integer>2</integer>
+  <key>StandardOutPath</key><string>/tmp/qmd-auth-proxy.log</string>
+  <key>StandardErrorPath</key><string>/tmp/qmd-auth-proxy.err</string>
+</dict>
+</plist>
