@@ -83,6 +83,62 @@ def _token_url(host: str, token: str, rel_posix: str) -> str:
     return f"{host}/{token}/{rel_posix}"
 
 
+def _split_wiki_units(
+    units: List[pathlib.Path], corpus: pathlib.Path
+) -> tuple[List[pathlib.Path], List[pathlib.Path]]:
+    """Split Units into (wiki, other) — one seam for Mirror primary surface (issue #22)."""
+
+    def _is_wiki(u: pathlib.Path) -> bool:
+        try:
+            rel = u.relative_to(corpus)
+            return rel.parts[0] == "wiki" if rel.parts else False
+        except ValueError:
+            return False
+
+    return [u for u in units if _is_wiki(u)], [u for u in units if not _is_wiki(u)]
+
+
+def _render_llms_content(
+    units: List[pathlib.Path], corpus: pathlib.Path, host: str, token: str
+) -> str:
+    """Render full tokenized map — only written under dist/<token>/ (issue #22)."""
+    lines: List[str] = [
+        "# Private Knowledgebase",
+        "",
+        "> Personal search corpus — GitHub, chats, notes, PDFs, web fetches — compiled wiki + raw Units.",
+        "",
+        "This map lists token-gated URLs. The Mirror Token is required in the path prefix.",
+        "",
+        "## Wiki",
+    ]
+    wiki_units, other_units = _split_wiki_units(units, corpus)
+    for u in wiki_units:
+        rel_str = u.relative_to(corpus).as_posix()
+        lines.append(f"- [{u.stem}]({_token_url(host, token, rel_str)}): Wiki page")
+    lines += ["", "## Silos"]
+    for u in other_units:
+        rel_str = u.relative_to(corpus).as_posix()
+        rel_parent = u.relative_to(corpus).parent
+        silo = "/".join(rel_parent.parts) if rel_parent.parts else "root"
+        lines.append(f"- [{u.stem}]({_token_url(host, token, rel_str)}): {silo}")
+    return "\n".join(lines) + "\n"
+
+
+def _render_root_content(n_wiki: int, n_other: int) -> str:
+    """Render redacted root pointer — never contains token or URLs (ADR-0003)."""
+    return "\n".join(
+        [
+            "# Private Knowledgebase",
+            "",
+            "> Personal search corpus — GitHub, chats, notes, PDFs, web fetches — compiled wiki + raw Units.",
+            "",
+            "This index is redacted. The full token-gated map lives under the Mirror Token prefix.",
+            f"Wiki pages: {n_wiki}, other Units: {n_other}. Paste a tokenized URL to navigate.",
+            "",
+        ]
+    ) + "\n"
+
+
 def build_mirror(
     corpus: pathlib.Path,
     dist: pathlib.Path,
@@ -129,43 +185,14 @@ def build_mirror(
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dest)
 
-    # Generate llms.txt at root and under token — both with tokenized URLs
-    llms_lines: List[str] = [
-        "# Private Knowledgebase",
-        "",
-        "> Personal search corpus — GitHub, chats, notes, PDFs, web fetches — compiled wiki + raw Units.",
-        "",
-        "This map lists token-gated URLs. The Mirror Token is required in the path prefix.",
-        "",
-        "## Wiki",
-    ]
+    # Generate llms.txt: full tokenized map under token prefix, redacted pointer at root.
+    # Root must never contain the Mirror Token (ADR-0003, issue #22) — it is
+    # served unauthenticated, so tokenized URLs there would leak the secret.
+    wiki_units, other_units = _split_wiki_units(units, corpus)
+    llms_content = _render_llms_content(units, corpus, host, token)
+    root_content = _render_root_content(len(wiki_units), len(other_units))
 
-    def _is_wiki(u: pathlib.Path) -> bool:
-        try:
-            rel = u.relative_to(corpus)
-            return rel.parts[0] == "wiki" if rel.parts else False
-        except ValueError:
-            return False
-
-    wiki_units = [u for u in units if _is_wiki(u)]
-    other_units = [u for u in units if not _is_wiki(u)]
-
-    for u in wiki_units:
-        rel_str = u.relative_to(corpus).as_posix()
-        llms_lines.append(f"- [{u.stem}]({_token_url(host, token, rel_str)}): Wiki page")
-
-    llms_lines.append("")
-    llms_lines.append("## Silos")
-
-    for u in other_units:
-        rel_str = u.relative_to(corpus).as_posix()
-        rel_parent = u.relative_to(corpus).parent
-        silo = "/".join(rel_parent.parts) if rel_parent.parts else "root"
-        llms_lines.append(f"- [{u.stem}]({_token_url(host, token, rel_str)}): {silo}")
-
-    llms_content = "\n".join(llms_lines) + "\n"
-
-    (tmp_dist / "llms.txt").write_text(llms_content, encoding="utf-8")
+    (tmp_dist / "llms.txt").write_text(root_content, encoding="utf-8")
     (token_dir / "llms.txt").write_text(llms_content, encoding="utf-8")
 
     # 404.html disables SPA fallback — untokenized paths must 404

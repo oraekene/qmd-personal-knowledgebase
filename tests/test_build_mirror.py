@@ -125,13 +125,18 @@ def test_build_mirror_token_gated_and_llms() -> None:
         txt = (dist / "llms.txt").read_text(encoding="utf-8")
         assert txt.startswith("# Private Knowledgebase")
         assert "> Personal search corpus" in txt
-        assert "## Wiki" in txt
-        assert "## Silos" in txt
-        assert token in txt  # tokenized URLs
-        assert "github/oraekene__nebula.md" in txt
+        # Root map is redacted — no Mirror Token leak (issue #22)
+        assert token not in txt
+        assert f"/{token}/" not in txt
+        token_txt = (dist / token / "llms.txt").read_text(encoding="utf-8")
+        assert token_txt.startswith("# Private Knowledgebase")
+        assert "## Wiki" in token_txt
+        assert "## Silos" in token_txt
+        assert token in token_txt  # tokenized URLs only under prefix
+        assert "github/oraekene__nebula.md" in token_txt
         # Wiki primary — Wiki section before Silos
-        wiki_idx = txt.index("## Wiki")
-        silos_idx = txt.index("## Silos")
+        wiki_idx = token_txt.index("## Wiki")
+        silos_idx = token_txt.index("## Silos")
         assert wiki_idx < silos_idx
         # 404 disables SPA
         assert (dist / "404.html").exists()
@@ -167,7 +172,7 @@ def test_build_mirror_idempotent_and_token_rotation() -> None:
         assert not (dist / token1 / "github" / "oraekene__nebula.md").exists()
         assert not (dist / token1).exists()
         txt = (dist / "llms.txt").read_text(encoding="utf-8")
-        assert token2 in txt
+        assert token2 not in txt
         assert token1 not in txt
         # llms.txt under new token also rotated
         assert token2 in (dist / token2 / "llms.txt").read_text(encoding="utf-8")
@@ -182,13 +187,16 @@ def test_build_mirror_predictable_urls() -> None:
         dist = tmp_path / "dist"
         token = "cccccccccccccccccccccccccccccccc"
         build_mirror(corpus, dist, token, host="https://qmd.example.com")
-        txt = (dist / "llms.txt").read_text(encoding="utf-8")
+        txt = (dist / token / "llms.txt").read_text(encoding="utf-8")
         assert f"https://qmd.example.com/{token}/github/oraekene__nebula.md" in txt
         assert f"https://qmd.example.com/{token}/wiki/index.md" in txt
         assert f"https://qmd.example.com/{token}/wiki/deep.md" in txt
         # All URLs predictable, no untokenized URLs
         assert "https://qmd.example.com/github" not in txt
-        assert "https://qmd.example.com/wiki" not in txt or f"/{token}/wiki" in txt
+        # Root map redacted — no token, no predictable URLs
+        root_txt = (dist / "llms.txt").read_text(encoding="utf-8")
+        assert token not in root_txt
+        assert "https://qmd.example.com/" not in root_txt or f"/{token}/" not in root_txt
 
 
 def test_build_mirror_headers_and_redirects_and_robots() -> None:
