@@ -32,6 +32,8 @@ class OrchestratorConfig:
 
     Parses env once so wiki_runner/mirror_runner closures stop scattering
     os.environ.get across the module. Paths resolve from corpus_root.
+    Note: MIRROR_TOKEN is deliberately NOT parsed here — it stays behind
+    load_mirror_token() so the secret never lands in a logged/repr'd config.
     """
 
     corpus_root: Path = DEFAULT_CORPUS_ROOT
@@ -56,12 +58,14 @@ class OrchestratorConfig:
         except ValueError:
             min_hours = 0.0
         host = os.environ.get("MIRROR_HOST", "https://qmd-mirror.pages.dev").strip() or "https://qmd-mirror.pages.dev"
+        dist_raw = os.environ.get("MIRROR_DIST", "dist").strip() or "dist"
         return cls(
             corpus_root=corpus_root,
             wiki_enabled=enabled,
             wiki_mode=mode,
             wiki_min_interval_hours=min_hours,
             mirror_host=host,
+            dist_dir=Path(dist_raw),
         )
 
 

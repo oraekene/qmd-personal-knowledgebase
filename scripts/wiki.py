@@ -31,7 +31,7 @@ import subprocess
 import tempfile
 from typing import Dict, List, Tuple
 
-from scripts import is_excluded as _shared_is_excluded
+from scripts import is_excluded
 
 DEFAULT_PROMPT_BUDGET_CHARS = 200_000
 COMPILE_CONCURRENCY = 5
@@ -73,11 +73,6 @@ class ProviderUnavailableError(RuntimeError):
     code = "provider_unavailable"
 
 
-def _is_excluded(path: pathlib.Path) -> bool:
-    """Back-compat — delegates to scripts.is_excluded (single source)."""
-    return _shared_is_excluded(path)
-
-
 def slugify(title: str) -> str:
     """Mirror llmwiki utils/markdown.ts slugify for wikilink resolution.
 
@@ -106,7 +101,7 @@ def _collect_units(corpus: pathlib.Path) -> List[pathlib.Path]:
     if not corpus.exists():
         return units
     for p in corpus.rglob("*.md"):
-        if _is_excluded(p):
+        if is_excluded(p):
             continue
         try:
             rel = p.relative_to(corpus)

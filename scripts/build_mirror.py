@@ -18,6 +18,8 @@ import re
 import shutil
 from typing import List
 
+from scripts import is_excluded
+
 
 _TOKEN_HEX_RE = re.compile(r"^[0-9a-fA-F]+$")
 
@@ -39,17 +41,8 @@ class MirrorToken(str):
         return super().__new__(cls, value)
 
 
-def _is_excluded(path: pathlib.Path) -> bool:
-    """Back-compat wrapper — delegates to scripts.is_excluded (single source)."""
-    from scripts import is_excluded
-
-    return is_excluded(path)
-
-
 def _collect_units(corpus: pathlib.Path) -> List[pathlib.Path]:
     """Collect markdown Units under corpus, sorted, excluding state/qmd."""
-    from scripts import is_excluded
-
     units: List[pathlib.Path] = []
     if not corpus.exists():
         return units
@@ -139,6 +132,29 @@ def _render_root_content(n_wiki: int, n_other: int) -> str:
     ) + "\n"
 
 
+def _atomic_publish(tmp_dist: pathlib.Path, dist: pathlib.Path) -> None:
+    """Swap tmp build into place with backup + rollback (issue #22).
+
+    Preserves the previous dist if the rename fails; removes backup on success.
+    """
+    backup_dist: pathlib.Path | None = None
+    if dist.exists():
+        backup_dist = dist.with_name(dist.name + ".tmp.backup")
+        if backup_dist.exists():
+            shutil.rmtree(backup_dist)
+        dist.rename(backup_dist)
+    try:
+        tmp_dist.rename(dist)
+        if backup_dist and backup_dist.exists():
+            shutil.rmtree(backup_dist)
+    except Exception:
+        if backup_dist and backup_dist.exists():
+            if dist.exists():
+                shutil.rmtree(dist)
+            backup_dist.rename(dist)
+        raise
+
+
 def build_mirror(
     corpus: pathlib.Path,
     dist: pathlib.Path,
@@ -175,7 +191,7 @@ def build_mirror(
         for src in corpus.rglob("*"):
             if src.is_dir():
                 continue
-            if _is_excluded(src):
+            if is_excluded(src):
                 continue
             try:
                 rel = src.relative_to(corpus)
@@ -251,23 +267,8 @@ def build_mirror(
     # _redirects — no SPA; token prefix 200, else 404.html
     (tmp_dist / "_redirects").write_text(f"/{token}/*  /{token}/:splat  200\n/*  /404.html  404\n", encoding="utf-8")
 
-    # Atomic swap: backup old dist, rename tmp, remove backup (preserves previous on failure)
-    if dist.exists():
-        backup_dist = dist.with_name(dist.name + ".tmp.backup")
-        if backup_dist.exists():
-            shutil.rmtree(backup_dist)
-        dist.rename(backup_dist)
-    try:
-        tmp_dist.rename(dist)
-        if backup_dist and backup_dist.exists():
-            shutil.rmtree(backup_dist)
-    except Exception:
-        # Rollback: restore backup if rename failed
-        if backup_dist and backup_dist.exists():
-            if dist.exists():
-                shutil.rmtree(dist)
-            backup_dist.rename(dist)
-        raise
+    # Atomic swap via helper (backup old dist, rename tmp, rollback on failure)
+    _atomic_publish(tmp_dist, dist)
     return dist
 
 
