@@ -16,7 +16,9 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import ClassVar
 
+from auth_proxy.oauth import handle_oauth_request
 from auth_proxy.proxy import _UNAUTHORIZED_BODY, _UNAUTHORIZED_HEADERS, check_auth, check_origin
+
 
 
 def _allowed_origins() -> tuple[str, ...]:
@@ -47,7 +49,23 @@ def make_handler(token: str, target: str) -> type[BaseHTTPRequestHandler]:
             length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(length) if length else b""
             headers = {k: v for k, v in self.headers.items()}
+            # OAuth shim: intercept discovery, dynamic registration, authorize, and token exchange
+            if handle_oauth_request(self, self.command, self.path, headers, body, token):
+                return
+            if self.command == "OPTIONS":
+                self.send_response(204)
+                origin = headers.get("Origin", "*")
+                self.send_header("Access-Control-Allow-Origin", origin)
+                self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS, HEAD")
+                self.send_header(
+                    "Access-Control-Allow-Headers",
+                    "Authorization, Content-Type, Accept, User-Agent, X-Requested-With",
+                )
+                self.send_header("Access-Control-Max-Age", "86400")
+                self.end_headers()
+                return
             if not check_auth(headers, token):
+
                 _send_unauthorized(self)
                 return
             if not check_origin(headers, _allowed_origins()):
@@ -56,6 +74,7 @@ def make_handler(token: str, target: str) -> type[BaseHTTPRequestHandler]:
                 self.end_headers()
                 self.wfile.write(b'{"error": "Forbidden origin"}')
                 return
+
             url = target + self.path
             # Preserve verbatim method via self.command; body only if present
             data = body if body else None
