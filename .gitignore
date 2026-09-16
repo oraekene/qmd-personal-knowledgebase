@@ -11,12 +11,14 @@ venv/
 dist/
 build/
 
-# QMD
+# QMD & Wiki Compiler State
 .qmd/
 corpus/.qmd/
 corpus/_state/
 *.qmd.db
 *.qmd-embed*
+.llmwiki/
+
 
 # Corpus - keep structure but ignore large generated artifacts if needed
 # Uncomment to ignore actual corpus data (keep in repo for now)
