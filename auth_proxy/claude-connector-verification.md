@@ -29,12 +29,22 @@ Record `tools/list` response + chat transcript excerpt showing corpus Unit retri
 
 ```
 # tools/list via tunnel (curl)
-curl -i -X POST https://qmd.example.com/mcp -H "Authorization: Bearer $TOKEN" -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
-# → 200 + {"tools":[{"name":"qmd_query"},...]}
+curl -i -X POST https://kb.parmeterai.space/mcp \
+  -H "Authorization: Bearer <AUTH_PROXY_TOKEN_REDACTED>" \
+  -H "Content-Type: application/json" \
+  -H "User-Agent: Mozilla/5.0" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 
-# Fresh chat transcript (YYYY-MM-DD):
-# Q: "Search my corpus..."
-# A: [cites corpus/notes/...md:1-5, corpus/chats/claude/...md]
+# -> HTTP/2 200 OK
+# Content-Type: text/event-stream
+# Tools available: qmd_query, qmd_get
 ```
 
-If beta headers unavailable, set `SKIP_CLAUDE_CONNECTOR=1` and rely on smoke + tunnel smokes; file an issue for OAuth shim per research #4.
+### Connector Status (2026-09-16)
+
+`SKIP_CLAUDE_CONNECTOR=1` recorded per line 40.
+Reason: User's Claude.ai organization account currently only supports OAuth 2.0 Dynamic Client Registration (RFC 7591 / RFC 8414) and lacks the beta "Custom Request Headers" UI.
+Follow-up issue filed: [#25 feat(auth_proxy): OAuth 2.0 Dynamic Client Registration shim for Claude.ai Web MCP connector](https://github.com/oraekene/qmd-personal-knowledgebase/issues/25).
+Direct tunnel MCP endpoint verified live and green via curl smoke.
+

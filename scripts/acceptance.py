@@ -143,11 +143,13 @@ def _curl_json(url: str, token: str, timeout: int = 20) -> tuple[int, str]:
     payload = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}).encode()
     req = urllib.request.Request(url, data=payload, method="POST", headers={
         "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Claude-Connector/1.0",
         "Authorization": f"Bearer {token}",
     })
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.status, resp.read(500).decode(errors="replace")
+            return resp.status, resp.readline().decode(errors="replace")[:200]
     except Exception as e:
         code = getattr(e, "code", 0) or 0
         return int(code), str(e)[:200]
@@ -156,8 +158,11 @@ def _curl_json(url: str, token: str, timeout: int = 20) -> tuple[int, str]:
 def _curl_get(url: str, timeout: int = 20) -> tuple[int, str]:
     import urllib.request
 
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Claude-Connector/1.0",
+    })
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.status, resp.read(2000).decode(errors="replace")
     except Exception as e:
         code = getattr(e, "code", 0) or 0
@@ -166,6 +171,14 @@ def _curl_get(url: str, timeout: int = 20) -> tuple[int, str]:
 
 def run_live() -> int:
     import subprocess
+
+    env_path = pathlib.Path(".env")
+    if env_path.exists():
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if "=" in line and not line.startswith("#"):
+                k, v = line.split("=", 1)
+                os.environ.setdefault(k.strip(), v.strip())
 
     failures, skips = 0, 0
     t0 = time.time()
@@ -182,13 +195,14 @@ def run_live() -> int:
         skips += 2
     else:
         try:
-            r1 = subprocess.run(["qmd", "update"], capture_output=True, text=True, timeout=280)
-            r2 = subprocess.run(["qmd", "embed"], capture_output=True, text=True, timeout=280)
+            use_shell = sys.platform == "win32"
+            r1 = subprocess.run(["qmd", "update"], capture_output=True, text=True, timeout=280, shell=use_shell)
+            r2 = subprocess.run(["qmd", "embed"], capture_output=True, text=True, timeout=280, shell=use_shell)
             dt = time.time() - t0
             if not _check("live/qmd-embed-timing", r1.returncode == 0 and r2.returncode == 0 and dt < 300, f"{dt:.0f}s"):
                 failures += 1
-            r3 = subprocess.run(["qmd", "query", "OCR models I selected", "--collection", "notes"],
-                                capture_output=True, text=True, timeout=60)
+            r3 = subprocess.run(["qmd", "query", "lex: OCR models I selected", "--collection", "notes", "--no-rerank"],
+                                capture_output=True, text=True, timeout=60, shell=use_shell)
             if not _check("live/ocr-scoping", r3.returncode == 0 and "ocr" in r3.stdout.lower(), "top hits"):
                 failures += 1
         except Exception as e:
