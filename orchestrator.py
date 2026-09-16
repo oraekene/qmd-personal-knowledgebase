@@ -174,15 +174,18 @@ if __name__ == "__main__":
 
     def qmd_runner():
         import subprocess
+        import sys
         # Single re-index: qmd update && qmd embed (no per-collection hooks)
         # Use subprocess; in tests this is mocked
-        result = subprocess.run(["qmd", "update"], check=False)
+        use_shell = sys.platform == "win32"
+        result = subprocess.run(["qmd", "update"], check=False, shell=use_shell)
         if result.returncode != 0:
             raise RuntimeError(f"qmd update failed {result.returncode}")
-        result = subprocess.run(["qmd", "embed"], check=False)
+        result = subprocess.run(["qmd", "embed"], check=False, shell=use_shell)
         if result.returncode != 0:
             raise RuntimeError(f"qmd embed failed {result.returncode}")
         return 0
+
 
     def wiki_runner():
         # Wiki synthesis after embed — config locality via OrchestratorConfig (issue #22).

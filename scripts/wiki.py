@@ -29,7 +29,10 @@ import pathlib
 import re
 import subprocess
 import tempfile
+import urllib.error
+import urllib.request
 from typing import Dict, List, Tuple
+
 
 from scripts import is_excluded
 
@@ -309,10 +312,63 @@ def validate_wikilinks(wiki_text: str, wiki_files: List[pathlib.Path]) -> List[s
     return errors
 
 
-def _stub_generate_wiki_page(
-    corpus: pathlib.Path, wiki_path: pathlib.Path, sources: List[pathlib.Path], model: str
+def _call_openai_compatible(
+    prompt: str,
+    base_url: str,
+    api_key: str,
+    model: str,
+    timeout: int = 45,
+) -> str:
+    """Call OpenAI-compatible chat completion endpoint (Workers AI, etc.)."""
+    endpoint = base_url.rstrip("/") + "/chat/completions"
+    payload = {
+        "model": model,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You are the knowledgebase wiki synthesis compiler. "
+                    "Synthesize the provided source units into an interlinked, clear concept explanation. "
+                    "Write in markdown, citing source files where appropriate using ^[silo/file.md:1-5] "
+                    "and referencing related concepts using [[concept-name]]."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ],
+        "max_tokens": 1200,
+        "temperature": 0.2,
+    }
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(endpoint, data=data, method="POST")
+    req.add_header("Authorization", f"Bearer {api_key}")
+    req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            resp_body = json.loads(resp.read().decode("utf-8"))
+            return resp_body["choices"][0]["message"]["content"].strip()
+    except urllib.error.HTTPError as e:
+        err_msg = e.read().decode("utf-8", errors="replace")
+        combined = f"HTTP {e.code}: {err_msg}"
+        if _is_provider_error(combined):
+            raise ProviderUnavailableError(combined[:2000]) from e
+        raise ProviderUnavailableError(f"LLM API error {e.code}: {err_msg[:500]}") from e
+    except Exception as e:
+        combined = str(e)
+        if _is_provider_error(combined):
+            raise ProviderUnavailableError(combined[:2000]) from e
+        raise ProviderUnavailableError(f"LLM network error: {e}") from e
+
+
+def _generate_wiki_page(
+    corpus: pathlib.Path,
+    wiki_path: pathlib.Path,
+    sources: List[pathlib.Path],
+    model: str,
+    base_url: str = DEFAULT_BASE_URL,
+    api_key: str = "",
+    mock: bool = True,
 ) -> None:
-    """Generate deterministic stub wiki page with frontmatter, citations, wikilinks."""
+    """Generate wiki page with frontmatter, citations, wikilinks — using LLM or deterministic stub."""
     cited = sources[:3]
     sources_rel = [p.relative_to(corpus).as_posix() for p in cited]
     cites = ", ".join(f"{rel}:1-5" for rel in sources_rel)
@@ -333,7 +389,7 @@ def _stub_generate_wiki_page(
         fm.append(f'  - "{s}"')
     fm.append("---")
     fm.append("")
-    # Enforce budget: snippets truncated proportionally to DEFAULT_PROMPT_BUDGET_CHARS
+
     budget = _prompt_budget_chars()
     snippets: List[str] = []
     for src in cited:
@@ -343,6 +399,18 @@ def _stub_generate_wiki_page(
         except Exception:
             snippets.append("")
     snippet_block = _truncate_to_budget(" ".join(snippets), min(budget, 5000))
+
+    if not mock and api_key:
+        prompt = (
+            f"Synthesize the following source units into a concept explanation.\n\n"
+            f"Sources: {', '.join(sources_rel)}\n\n"
+            f"Content extracts:\n{snippet_block}\n\n"
+            f"Include citations like ^[{cites}] and link to {wikilinks}."
+        )
+        details_content = _call_openai_compatible(prompt, base_url, api_key, model)
+    else:
+        details_content = f"{snippet_block}\n\nThis stub mimics llmwiki extraction+generation without LLM for tests."
+
     body = [
         f"> {summary}",
         "",
@@ -354,25 +422,30 @@ def _stub_generate_wiki_page(
         "",
         "## Details",
         "",
-        snippet_block,
-        "",
-        "This stub mimics llmwiki extraction+generation without LLM for tests.",
+        details_content,
         "",
     ]
     _atomic_write(wiki_path, "\n".join(fm + body))
 
 
-def _generate_pages_concurrent(
-    jobs: List[Tuple[pathlib.Path, pathlib.Path, List[pathlib.Path], str]],
+def _stub_generate_wiki_page(
+    corpus: pathlib.Path, wiki_path: pathlib.Path, sources: List[pathlib.Path], model: str
 ) -> None:
-    """Generate stub pages with COMPILE_CONCURRENCY limit (mirrors p-limit)."""
+    """Deterministic stub wiki page (tests and mock mode)."""
+    _generate_wiki_page(corpus, wiki_path, sources, model, mock=True)
+
+
+def _generate_pages_concurrent(
+    jobs: List[Tuple[pathlib.Path, pathlib.Path, List[pathlib.Path], str, str, str, bool]],
+) -> None:
+    """Generate wiki pages with COMPILE_CONCURRENCY limit."""
     workers = _concurrency()
     if len(jobs) <= 1:
-        for corpus, path, sources, model in jobs:
-            _stub_generate_wiki_page(corpus, path, sources, model)
+        for c, p, s, m, b, k, mk in jobs:
+            _generate_wiki_page(c, p, s, m, b, k, mk)
         return
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
-        futs = [ex.submit(_stub_generate_wiki_page, c, p, s, m) for c, p, s, m in jobs]
+        futs = [ex.submit(_generate_wiki_page, c, p, s, m, b, k, mk) for c, p, s, m, b, k, mk in jobs]
         for f in concurrent.futures.as_completed(futs):
             f.result()
 
@@ -401,14 +474,17 @@ def compile_wiki(
     if not mock:
         ensure_provider_available()
 
-    # Read budget/concurrency now — enforced in stub generation below
     budget = _prompt_budget_chars()
     workers = _concurrency()
     _ = (budget, workers)
 
     base_url = os.environ.get("OPENAI_BASE_URL", DEFAULT_BASE_URL)
+    cf_acc = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "").strip()
+    if cf_acc and "<id>" in base_url:
+        base_url = base_url.replace("<id>", cf_acc)
+
     model = os.environ.get("LLMWIKI_MODEL", DEFAULT_MODEL)
-    _ = base_url
+    api_key = os.environ.get("OPENAI_API_KEY", "").strip() or os.environ.get("CLOUDFLARE_API_TOKEN", "").strip()
 
     changed = detect_changes(corpus, state_path)
     current_hashes: Dict[str, str] = {}
@@ -418,90 +494,71 @@ def compile_wiki(
     if not changed and state_path.exists():
         return {"compiled": 0, "skipped": len(current_hashes), "errors": 0}
 
-    if mock or os.environ.get("LLMWIKI_MOCK") == "1":
-        wiki_dir = corpus / WIKI_SILO
-        concepts_dir = wiki_dir / "concepts"
-        moc_file = wiki_dir / "MOC.md"
-        index_file = wiki_dir / "index.md"
-        units = _collect_units(corpus)
-        if not units:
-            concepts_dir.mkdir(parents=True, exist_ok=True)
-            _save_state(current_hashes, state_path)
-            return {"compiled": 0, "skipped": 0, "errors": 0}
-
+    wiki_dir = corpus / WIKI_SILO
+    concepts_dir = wiki_dir / "concepts"
+    moc_file = wiki_dir / "MOC.md"
+    index_file = wiki_dir / "index.md"
+    units = _collect_units(corpus)
+    if not units:
         concepts_dir.mkdir(parents=True, exist_ok=True)
-        slug = "overview"
-        if len(changed) == 1:
-            rel = next(iter(changed))
-            silo = pathlib.Path(rel).parts[0] if "/" in rel else "general"
-            slug = f"{silo}-concept"
-
-        target = concepts_dir / f"{slug}.md"
-        sources = [corpus / rel for rel in changed.keys()] if changed else units
-        if not sources:
-            sources = units
-
-        jobs: List[Tuple[pathlib.Path, pathlib.Path, List[pathlib.Path], str]] = [
-            (corpus, target, sources, model)
-        ]
-        if len(units) >= 2 and slug != "concept-index":
-            second = concepts_dir / "concept-index.md"
-            if not second.exists():
-                jobs.append((corpus, second, units[:2], model))
-        _generate_pages_concurrent(jobs)
-
-        # Ensure cross-link from second to first if both exist (atomic append via rewrite)
-        second_path = concepts_dir / "concept-index.md"
-        if second_path.exists() and slug != "concept-index":
-            text = second_path.read_text(encoding="utf-8")
-            if f"[[{slug}]]" not in text:
-                _atomic_write(second_path, text + f"\nSee also [[{slug}]]\n")
-
-        moc_content = "\n".join(
-            [
-                "---",
-                f"source: {WIKI_SOURCE}",
-                f"silo: {WIKI_SILO}",
-                'title: "MOC"',
-                'summary: "Map of Content for wiki."',
-                f'modelId: "{model}"',
-                'promptVersion: "1.0"',
-                "sources: []",
-                "---",
-                "",
-                "> MOC for wiki.",
-                "",
-                "# MOC",
-                "",
-                f"- [[{slug}]]",
-                "- [[concept-index]]",
-                "",
-            ]
-        )
-        _atomic_write(moc_file, moc_content)
-        _atomic_write(index_file, moc_content)
-
         _save_state(current_hashes, state_path)
-        return {"compiled": len(changed), "skipped": len(current_hashes) - len(changed), "errors": 0}
+        return {"compiled": 0, "skipped": 0, "errors": 0}
 
-    # Real llmwiki path — delegate to npx llmwiki compile
-    # Requires Node + llmwiki + OPENAI_API_KEY. Project root is corpus.parent
-    # (llmwiki expects sources/ + wiki/ + .llmwiki/ under root).
-    cmd = ["npx", "llmwiki", "compile"]
-    env = os.environ.copy()
-    env.setdefault("LLMWIKI_PROMPT_BUDGET_CHARS", str(DEFAULT_PROMPT_BUDGET_CHARS))
-    env.setdefault("LLMWIKI_COMPILE_CONCURRENCY", str(COMPILE_CONCURRENCY))
-    # Run from corpus.parent so .llmwiki/state.json aligns, if it exists
-    cwd = str(corpus.parent) if corpus.name != "." else str(pathlib.Path.cwd())
-    result = subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True)
-    if result.returncode != 0:
-        combined = (result.stdout or "") + (result.stderr or "")
-        if _is_provider_error(combined):
-            raise ProviderUnavailableError(combined[:2000])
-        raise RuntimeError(f"llmwiki compile failed {result.returncode}: {combined[:500]}")
+    concepts_dir.mkdir(parents=True, exist_ok=True)
+    slug = "overview"
+    if len(changed) == 1:
+        rel = next(iter(changed))
+        silo = pathlib.Path(rel).parts[0] if "/" in rel else "general"
+        slug = f"{silo}-concept"
+
+    target = concepts_dir / f"{slug}.md"
+    sources = [corpus / rel for rel in changed.keys()] if changed else units
+    if not sources:
+        sources = units
+
+    jobs: List[Tuple[pathlib.Path, pathlib.Path, List[pathlib.Path], str, str, str, bool]] = [
+        (corpus, target, sources, model, base_url, api_key, mock)
+    ]
+    if len(units) >= 2 and slug != "concept-index":
+        second = concepts_dir / "concept-index.md"
+        if not second.exists():
+            jobs.append((corpus, second, units[:2], model, base_url, api_key, mock))
+    _generate_pages_concurrent(jobs)
+
+    # Ensure cross-link from second to first if both exist (atomic append via rewrite)
+    second_path = concepts_dir / "concept-index.md"
+    if second_path.exists() and slug != "concept-index":
+        text = second_path.read_text(encoding="utf-8")
+        if f"[[{slug}]]" not in text:
+            _atomic_write(second_path, text + f"\nSee also [[{slug}]]\n")
+
+    moc_content = "\n".join(
+        [
+            "---",
+            f"source: {WIKI_SOURCE}",
+            f"silo: {WIKI_SILO}",
+            'title: "MOC"',
+            'summary: "Map of Content for wiki."',
+            f'modelId: "{model}"',
+            'promptVersion: "1.0"',
+            "sources: []",
+            "---",
+            "",
+            "> MOC for wiki.",
+            "",
+            "# MOC",
+            "",
+            f"- [[{slug}]]",
+            "- [[concept-index]]",
+            "",
+        ]
+    )
+    _atomic_write(moc_file, moc_content)
+    _atomic_write(index_file, moc_content)
 
     _save_state(current_hashes, state_path)
-    return {"compiled": len(changed), "skipped": 0, "errors": 0}
+    return {"compiled": len(changed), "skipped": len(current_hashes) - len(changed), "errors": 0}
+
 
 
 def refresh_stale(
