@@ -158,8 +158,11 @@ def _curl_json(url: str, token: str, timeout: int = 20) -> tuple[int, str]:
 def _curl_get(url: str, timeout: int = 20) -> tuple[int, str]:
     import urllib.request
 
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Claude-Connector/1.0",
+    })
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.status, resp.read(2000).decode(errors="replace")
     except Exception as e:
         code = getattr(e, "code", 0) or 0
