@@ -53,3 +53,8 @@ tinyfish-cookbook-main/
 # Logs
 *.log
 orchestrator.log
+
+# Cloudflare Wrangler & Scratch
+.wrangler/
+QMD knowledgebase*.txt
+
