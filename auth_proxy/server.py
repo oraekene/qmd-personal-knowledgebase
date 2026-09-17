@@ -111,6 +111,21 @@ def make_handler(token: str, target: str) -> type[BaseHTTPRequestHandler]:
                 self.wfile.write(b'{"error": "Forbidden origin"}')
                 return
 
+            # If tools/call query without explicit rerank, default to rerank=False for sub-second CPU response
+            if self.command == "POST" and self.path.startswith("/mcp") and body:
+                try:
+                    payload = json.loads(body.decode("utf-8"))
+                    if (
+                        payload.get("method") == "tools/call"
+                        and payload.get("params", {}).get("name") == "query"
+                    ):
+                        args = payload.setdefault("params", {}).setdefault("arguments", {})
+                        if "rerank" not in args:
+                            args["rerank"] = False
+                            body = json.dumps(payload).encode("utf-8")
+                except Exception:
+                    pass
+
             url = target + self.path
             # Preserve verbatim method via self.command; body only if present
             data = body if body else None
