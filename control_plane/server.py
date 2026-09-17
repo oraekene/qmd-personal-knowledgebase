@@ -285,9 +285,9 @@ class DaemonSupervisor:
                     return {"status": "already_running", "message": "QMD port 8181 is already active"}
                 env["QMD_ALLOWED_ORIGINS"] = "*"
                 if sys.platform == "win32":
-                    cmd = ["cmd.exe", "/c", str(self.repo_root / "qmd.cmd"), "mcp", "--http", "--port", "8181"]
+                    cmd = ["cmd.exe", "/c", str(self.repo_root / "qmd.cmd"), "mcp", "--http", "--port", "8181", "--host", "0.0.0.0"]
                 else:
-                    cmd = ["node", "qmd-main/node_modules/tsx/dist/cli.mjs", "qmd-main/src/cli/qmd.ts", "mcp", "--http", "--port", "8181"]
+                    cmd = ["node", "qmd-main/node_modules/tsx/dist/cli.mjs", "qmd-main/src/cli/qmd.ts", "mcp", "--http", "--port", "8181", "--host", "0.0.0.0"]
                 proc = subprocess.Popen(cmd, cwd=str(self.repo_root), env=env)
                 self.processes["qmd"] = proc
                 return {"status": "started", "name": "qmd"}

@@ -9,6 +9,8 @@ Per #18 + spec.md:128-131 + research #4.
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 import sys
 import urllib.error
@@ -19,6 +21,38 @@ from typing import ClassVar
 from auth_proxy.oauth import handle_oauth_request
 from auth_proxy.proxy import _UNAUTHORIZED_BODY, _UNAUTHORIZED_HEADERS, check_auth, check_origin
 
+logger = logging.getLogger("auth_proxy")
+
+_HOP_BY_HOP = {
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailers",
+    "transfer-encoding",
+    "upgrade",
+}
+
+
+def _load_dotenv() -> None:
+    """Load repo-root .env variables into os.environ if missing."""
+    env_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
+    if not os.path.exists(env_file):
+        return
+    try:
+        with open(env_file, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                k = k.strip()
+                v = v.strip().strip('"').strip("'")
+                if k and k not in os.environ:
+                    os.environ[k] = v
+    except Exception:
+        pass
 
 
 def _allowed_origins() -> tuple[str, ...]:
@@ -65,7 +99,6 @@ def make_handler(token: str, target: str) -> type[BaseHTTPRequestHandler]:
                 self.end_headers()
                 return
             if not check_auth(headers, token):
-
                 _send_unauthorized(self)
                 return
             if not check_origin(headers, _allowed_origins()):
@@ -82,32 +115,64 @@ def make_handler(token: str, target: str) -> type[BaseHTTPRequestHandler]:
             for k, v in self.headers.items():
                 if k.lower() not in ("host", "content-length"):
                     req.add_header(k, v)
+
+            # Ensure Accept header includes both application/json and text/event-stream
+            # to satisfy QMD MCP server transport requirement (#881 / MCP 2024-11-05).
+            accept_val = req.get_header("Accept", "")
+            if not accept_val or accept_val == "*/*":
+                req.headers["Accept"] = "application/json, text/event-stream"
+            elif "text/event-stream" not in accept_val:
+                req.headers["Accept"] = f"{accept_val}, text/event-stream"
+
             try:
-                with urllib.request.urlopen(req) as resp:
+                try:
+                    resp_cm = urllib.request.urlopen(req)
+                except (urllib.error.URLError, TimeoutError) as conn_err:
+                    # Fallback between 127.0.0.1 and localhost if IPv4/IPv6 loopback differs
+                    fallback_url = None
+                    if "127.0.0.1" in url:
+                        fallback_url = url.replace("127.0.0.1", "localhost")
+                    elif "localhost" in url:
+                        fallback_url = url.replace("localhost", "127.0.0.1")
+                    if fallback_url:
+                        fallback_req = urllib.request.Request(
+                            fallback_url, data=data, method=self.command, headers=req.headers
+                        )
+                        resp_cm = urllib.request.urlopen(fallback_req)
+                    else:
+                        raise conn_err
+
+                with resp_cm as resp:
+                    resp_body = resp.read()
                     self.send_response(resp.status)
+                    # Strip hop-by-hop headers to prevent protocol breakage (e.g. dechunked body with chunked header)
                     for k, v in resp.headers.items():
-                        self.send_header(k, v)
+                        if k.lower() not in _HOP_BY_HOP and k.lower() != "content-length":
+                            self.send_header(k, v)
+                    self.send_header("Content-Length", str(len(resp_body)))
                     self.end_headers()
-                    self.wfile.write(resp.read())
+                    self.wfile.write(resp_body)
             except urllib.error.HTTPError as e:
-                # Forward upstream error verbatim — status/headers/body
+                # Forward upstream error verbatim — status/headers/body, stripping hop-by-hop headers
+                err_body = e.read() if hasattr(e, "read") else b""
                 self.send_response(e.code)
-                # e.headers is http.client.HTTPMessage — forward as-is
                 if e.headers is not None:
                     for k, v in e.headers.items():
-                        self.send_header(k, v)
+                        if k.lower() not in _HOP_BY_HOP and k.lower() != "content-length":
+                            self.send_header(k, v)
                 else:
                     self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(err_body)))
                 self.end_headers()
-                try:
-                    self.wfile.write(e.read())
-                except Exception:
-                    self.wfile.write(b"")
+                self.wfile.write(err_body)
             except Exception as e:
+                logger.exception("Proxy upstream forwarding error")
+                err_bytes = json.dumps({"error": f"Bad Gateway: {e}"}).encode("utf-8")
                 self.send_response(502)
                 self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(err_bytes)))
                 self.end_headers()
-                self.wfile.write(f'{{"error": "Bad Gateway: {e}"}}'.encode())
+                self.wfile.write(err_bytes)
 
         # Verb-preserving: each HTTP verb delegates to _proxy_request
         def do_GET(self) -> None:  # noqa: N802
@@ -140,6 +205,7 @@ def make_handler(token: str, target: str) -> type[BaseHTTPRequestHandler]:
 
 
 def main() -> None:
+    _load_dotenv()
     token = os.environ.get("AUTH_PROXY_TOKEN", "")
     if not token:
         if os.environ.get("ALLOW_INSECURE_DEFAULT"):
@@ -153,7 +219,7 @@ def main() -> None:
             # Fail-closed: use placeholder that never matches, so every request 401
             token = "__UNSET_AUTH_PROXY_TOKEN__"
 
-    target = os.environ.get("QMD_TARGET", "http://127.0.0.1:8181")
+    target = os.environ.get("QMD_TARGET", "http://localhost:8181")
     listen_port = int(os.environ.get("PROXY_PORT", "3210"))
     if _allowed_origins() == ("*",):
         print(
@@ -176,3 +242,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
