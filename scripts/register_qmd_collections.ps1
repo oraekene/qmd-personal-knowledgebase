@@ -4,14 +4,16 @@
 $root = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
 Set-Location $root
 
+$qmd = if (Test-Path ".\qmd.cmd") { ".\qmd.cmd" } else { "qmd" }
+
 function Add-Collection($name, $path) {
   if (Test-Path $path) {
-    Write-Host "→ qmd collection add $path --name $name"
-    & qmd collection add $path --name $name
+    Write-Host "→ $qmd collection add $path --name $name"
+    & $qmd collection add $path --name $name
     if ($LASTEXITCODE -ne 0) { Write-Host "  (warn: add $name failed, continuing)" -ForegroundColor Yellow }
   } else {
     Write-Host "  (skip $name: $path missing — will be indexed once created)" -ForegroundColor Yellow
-    Write-Host "  To register later: qmd collection add $path --name $name"
+    Write-Host "  To register later: $qmd collection add $path --name $name"
   }
 }
 

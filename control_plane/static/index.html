@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>QMD Knowledgebase — Control Plane</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app-layout">
+    <!-- Header -->
+    <header class="top-nav">
+      <div class="logo-group">
+        <div class="logo-icon">🧠</div>
+        <div>
+          <h1>QMD Knowledgebase</h1>
+          <span class="subtitle">Unified Control Plane & Dashboard</span>
+        </div>
+      </div>
+      <div class="header-actions">
+        <button id="btn-open-settings" class="btn btn-secondary">⚙️ Settings & Secrets</button>
+        <button id="btn-start-all-daemons" class="btn btn-primary">⚡ Start All Daemons</button>
+      </div>
+    </header>
+
+    <main class="main-content">
+      <!-- Section 1: Service Status Cards -->
+      <section class="section">
+        <div class="section-header">
+          <h2>Service Monitor</h2>
+          <span class="refresh-indicator" id="status-timer">Auto-refreshing</span>
+        </div>
+        <div class="grid grid-4" id="services-grid">
+          <!-- QMD MCP Server Card -->
+          <div class="card status-card" id="card-qmd">
+            <div class="card-header">
+              <span class="card-title">QMD MCP Server</span>
+              <span class="badge badge-gray" id="badge-qmd">Checking...</span>
+            </div>
+            <div class="card-body">
+              <p class="meta-label">Local Port: <strong>8181</strong></p>
+              <p class="meta-desc">Core hybrid BM25 + Vector embedding search engine.</p>
+            </div>
+            <div class="card-footer">
+              <button class="btn btn-xs btn-outline" onclick="controlDaemon('qmd', 'start')">Start</button>
+              <button class="btn btn-xs btn-outline" onclick="controlDaemon('qmd', 'restart')">Restart</button>
+            </div>
+          </div>
+
+          <!-- Auth Proxy Card -->
+          <div class="card status-card" id="card-proxy">
+            <div class="card-header">
+              <span class="card-title">Auth Proxy (OAuth)</span>
+              <span class="badge badge-gray" id="badge-proxy">Checking...</span>
+            </div>
+            <div class="card-body">
+              <p class="meta-label">Local Port: <strong>3210</strong></p>
+              <p class="meta-desc">RFC 7591 Dynamic Registration shim for Claude.ai.</p>
+            </div>
+            <div class="card-footer">
+              <button class="btn btn-xs btn-outline" onclick="controlDaemon('auth_proxy', 'start')">Start</button>
+              <button class="btn btn-xs btn-outline" onclick="controlDaemon('auth_proxy', 'restart')">Restart</button>
+            </div>
+          </div>
+
+          <!-- Cloudflare Tunnel Card -->
+          <div class="card status-card" id="card-tunnel">
+            <div class="card-header">
+              <span class="card-title">Cloudflare Tunnel</span>
+              <span class="badge badge-gray" id="badge-tunnel">Checking...</span>
+            </div>
+            <div class="card-body">
+              <p class="meta-label">Public Domain: <strong>kb.parmeterai.space</strong></p>
+              <p class="meta-desc">Secure HTTPS ingress connecting Claude.ai to local proxy.</p>
+            </div>
+            <div class="card-footer">
+              <button class="btn btn-xs btn-outline" onclick="controlDaemon('tunnel', 'start')">Start</button>
+              <a href="https://kb.parmeterai.space/.well-known/oauth-authorization-server" target="_blank" class="btn btn-xs btn-outline">Probe</a>
+            </div>
+          </div>
+
+          <!-- Cloudflare Pages Mirror Card -->
+          <div class="card status-card" id="card-mirror">
+            <div class="card-header">
+              <span class="card-title">Static Web Mirror</span>
+              <span class="badge badge-gray" id="badge-mirror">Checking...</span>
+            </div>
+            <div class="card-body">
+              <p class="meta-label">Public Host: <strong>qmd-mirror.pages.dev</strong></p>
+              <p class="meta-desc">Token-protected encrypted reference & llms.txt index.</p>
+            </div>
+            <div class="card-footer">
+              <a id="link-mirror" href="https://qmd-mirror.pages.dev" target="_blank" class="btn btn-xs btn-outline">Open Mirror</a>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Section 2: Pipelines & One-Click Actions -->
+      <section class="section">
+        <div class="section-header">
+          <h2>Pipeline Actions</h2>
+          <span class="subtitle-hint">Click any button to trigger the process in background</span>
+        </div>
+        <div class="grid grid-3">
+          <!-- Action 1: Orchestrator -->
+          <div class="card action-card">
+            <div class="action-icon">🚀</div>
+            <h3>Full Ingestion & Sync</h3>
+            <p>Ingests new chat exports & PDFs, crawls repos, re-indexes QMD, synthesizes wiki, and deploys mirror.</p>
+            <button class="btn btn-primary btn-block" onclick="runAction('orchestrator')">Run Orchestrator</button>
+          </div>
+
+          <!-- Action 2: QMD Re-index & Embed -->
+          <div class="card action-card">
+            <div class="action-icon">🔄</div>
+            <h3>Re-Index & Embed</h3>
+            <p>Updates QMD collection indices and builds local vector embeddings for newly added notes and units.</p>
+            <button class="btn btn-secondary btn-block" onclick="runAction('reindex')">Update & Embed</button>
+          </div>
+
+          <!-- Action 3: Wiki Synthesis -->
+          <div class="card action-card">
+            <div class="action-icon">🧠</div>
+            <h3>Compile Wiki Concepts</h3>
+            <p>Runs Cloudflare Workers AI free tier synthesis to extract cross-document concepts and topic hubs.</p>
+            <button class="btn btn-secondary btn-block" onclick="runAction('wiki')">Compile Wiki</button>
+          </div>
+
+          <!-- Action 4: Static Mirror -->
+          <div class="card action-card">
+            <div class="action-icon">🌐</div>
+            <h3>Build & Deploy Mirror</h3>
+            <p>Generates static encrypted pages and deploys to Cloudflare Pages with token authorization.</p>
+            <button class="btn btn-secondary btn-block" onclick="runAction('mirror')">Deploy Mirror</button>
+          </div>
+
+          <!-- Action 5: Deep GitHub Extractor -->
+          <div class="card action-card">
+            <div class="action-icon">🐙</div>
+            <h3>Crawl GitHub Repos</h3>
+            <p>Extracts owned, forked, and starred repositories, directory trees, text files, and all issues.</p>
+            <button class="btn btn-secondary btn-block" onclick="runAction('github')">Crawl Repos</button>
+          </div>
+
+          <!-- Action 6: Live Smoke Test -->
+          <div class="card action-card">
+            <div class="action-icon">🧪</div>
+            <h3>Health & Auth Tests</h3>
+            <p>Runs automated live acceptance suite verifying QMD embeddings, OAuth proxy, and Cloudflare Pages.</p>
+            <button class="btn btn-secondary btn-block" onclick="runAction('smoke')">Run Smoke Tests</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Section 3: Real-Time Execution Console -->
+      <section class="section">
+        <div class="section-header">
+          <h2>Live Log Console</h2>
+          <div class="console-controls">
+            <span class="badge" id="task-badge">Idle</span>
+            <button class="btn btn-xs btn-outline" id="btn-stop-task" onclick="stopTask()" style="display:none;">Stop Task</button>
+            <button class="btn btn-xs btn-outline" onclick="clearLogs()">Clear</button>
+            <label class="checkbox-label">
+              <input type="checkbox" id="autoscroll" checked> Auto-scroll
+            </label>
+          </div>
+        </div>
+        <div class="terminal-window" id="terminal">
+          <div class="terminal-line text-muted">[System] Control Plane ready. Output from triggered actions will stream here.</div>
+        </div>
+      </section>
+
+      <!-- Section 4: Drag & Drop Ingestion Hub & Corpus Stats -->
+      <div class="grid grid-2">
+        <!-- Dropzone Card -->
+        <section class="section">
+          <div class="section-header">
+            <h2>Inbox Dropzone</h2>
+          </div>
+          <div class="card dropzone-card" id="dropzone">
+            <div class="dropzone-inner">
+              <div class="dropzone-icon">📥</div>
+              <h3>Drag & Drop Files Here</h3>
+              <p class="dropzone-sub">Drop <strong>.zip</strong> for AI Chats (Claude, ChatGPT, Gemini) or <strong>.pdf</strong> for research papers</p>
+              <input type="file" id="file-input" multiple style="display:none;">
+              <button class="btn btn-secondary" onclick="document.getElementById('file-input').click()">Browse Files</button>
+            </div>
+          </div>
+          <div id="upload-status-list" class="upload-list"></div>
+        </section>
+
+        <!-- Corpus Statistics Card -->
+        <section class="section">
+          <div class="section-header">
+            <h2>Corpus Statistics</h2>
+          </div>
+          <div class="card stats-breakdown-card">
+            <div class="stats-metric-header">
+              <span class="total-count" id="stat-total">0</span>
+              <span class="total-label">Total Indexed Units</span>
+            </div>
+            <div class="stats-table">
+              <div class="stat-row"><span>📝 Personal Notes</span><strong id="stat-notes">0</strong></div>
+              <div class="stat-row"><span>🧠 Wiki Concepts</span><strong id="stat-wiki">0</strong></div>
+              <div class="stat-row"><span>🐙 GitHub Repos</span><strong id="stat-github">0</strong></div>
+              <div class="stat-row"><span>💬 AI Chat Sessions</span><strong id="stat-chats">0</strong></div>
+              <div class="stat-row"><span>📄 PDF Documents</span><strong id="stat-pdfs">0</strong></div>
+              <div class="stat-row"><span>🌐 Web Expansions</span><strong id="stat-web">0</strong></div>
+              <div class="stat-row"><span>🐦 X / Twitter Units</span><strong id="stat-twitter">0</strong></div>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <!-- Section 5: Instant Search Tester -->
+      <section class="section">
+        <div class="section-header">
+          <h2>Interactive Search Tester</h2>
+          <span class="subtitle-hint">Query your local knowledgebase directly to verify retrieval</span>
+        </div>
+        <div class="card search-card">
+          <form id="search-form" onsubmit="event.preventDefault(); executeSearch();">
+            <div class="search-input-group">
+              <input type="text" id="search-query" placeholder="e.g. OCR selection rationale, solar sizing algorithm, prompt injection..." class="input-text">
+              <button type="submit" class="btn btn-primary" id="btn-search">Search QMD</button>
+            </div>
+          </form>
+          <div id="search-results-box" class="search-results-box" style="display:none;">
+            <h4>Search Output:</h4>
+            <pre id="search-raw-output" class="code-block"></pre>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Settings Modal -->
+    <div class="modal" id="settings-modal" style="display:none;">
+      <div class="modal-overlay" onclick="closeSettings()"></div>
+      <div class="modal-dialog">
+        <div class="modal-header">
+          <h3>Configuration & Credentials (.env)</h3>
+          <button class="btn-close" onclick="closeSettings()">&times;</button>
+        </div>
+        <div class="modal-body">
+          <form id="settings-form" onsubmit="event.preventDefault(); saveSettings();">
+            <div class="form-group">
+              <label>AUTH_PROXY_TOKEN (Master Bearer Token)</label>
+              <div class="input-with-action">
+                <input type="password" id="cfg-AUTH_PROXY_TOKEN" class="input-text">
+                <button type="button" class="btn btn-xs btn-outline" onclick="togglePassword('cfg-AUTH_PROXY_TOKEN')">Show</button>
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label>TUNNEL_URL</label>
+              <input type="text" id="cfg-TUNNEL_URL" class="input-text">
+            </div>
+
+            <div class="form-group">
+              <label>TUNNEL_TOKEN (Cloudflare Tunnel)</label>
+              <div class="input-with-action">
+                <input type="password" id="cfg-TUNNEL_TOKEN" class="input-text">
+                <button type="button" class="btn btn-xs btn-outline" onclick="togglePassword('cfg-TUNNEL_TOKEN')">Show</button>
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label>GITHUB_TOKEN (Personal Access Token)</label>
+              <input type="password" id="cfg-GITHUB_TOKEN" class="input-text" placeholder="ghp_...">
+            </div>
+
+            <div class="form-group">
+              <label>CLOUDFLARE_API_TOKEN (Workers AI & Pages)</label>
+              <input type="password" id="cfg-CLOUDFLARE_API_TOKEN" class="input-text">
+            </div>
+
+            <div class="form-group">
+              <label>CLOUDFLARE_ACCOUNT_ID</label>
+              <input type="text" id="cfg-CLOUDFLARE_ACCOUNT_ID" class="input-text">
+            </div>
+
+            <div class="form-group">
+              <label>MIRROR_TOKEN (Private Static Mirror Access Token)</label>
+              <input type="text" id="cfg-MIRROR_TOKEN" class="input-text">
+            </div>
+
+            <div class="form-group">
+              <label>MIRROR_HOST</label>
+              <input type="text" id="cfg-MIRROR_HOST" class="input-text">
+            </div>
+
+            <div class="form-actions">
+              <button type="button" class="btn btn-secondary" onclick="closeSettings()">Cancel</button>
+              <button type="submit" class="btn btn-primary" id="btn-save-settings">Save Configurations</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <!-- Toast Notification -->
+    <div id="toast" class="toast" style="display:none;"></div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
