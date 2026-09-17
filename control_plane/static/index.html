@@ -195,7 +195,13 @@
             <div class="dropzone-inner">
               <div class="dropzone-icon">📥</div>
               <h3>Drag & Drop Files Here</h3>
-              <p class="dropzone-sub">Drop <strong>.zip</strong> for AI Chats (Claude, ChatGPT, Gemini) or <strong>.pdf</strong> for research papers</p>
+              <p class="dropzone-sub">Drop <strong>.zip</strong> for AI Chats or Simplenote/Keep notes, <strong>.pdf</strong> for documents, or <strong>.md / .txt</strong> for quick captures</p>
+              <div style="display:flex; gap:6px; justify-content:center; margin-bottom:12px; flex-wrap:wrap;">
+                <span class="badge badge-gray" style="font-size:10px;">💬 AI Chats (.zip)</span>
+                <span class="badge badge-gray" style="font-size:10px;">📝 Simplenote / Keep (.zip)</span>
+                <span class="badge badge-gray" style="font-size:10px;">📄 PDFs (.pdf)</span>
+                <span class="badge badge-gray" style="font-size:10px;">✍️ Notes (.md, .txt)</span>
+              </div>
               <input type="file" id="file-input" multiple style="display:none;">
               <button class="btn btn-secondary" onclick="document.getElementById('file-input').click()">Browse Files</button>
             </div>

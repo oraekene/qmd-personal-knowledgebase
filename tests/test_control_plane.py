@@ -157,6 +157,23 @@ def test_control_plane_http_server(tmp_path: Path):
         assert uploaded_zip.exists()
         assert uploaded_zip.read_bytes() == b"dummy_zip_content"
 
+        # 5b. POST /api/upload (Simplenote ZIP upload -> inbox/notes)
+        sn_req = urllib.request.Request(
+            f"{base_url}/api/upload",
+            data=b"dummy_simplenote_zip",
+            headers={"Content-Type": "application/octet-stream", "X-Filename": "simplenote_export.zip"},
+            method="POST",
+        )
+        with urllib.request.urlopen(sn_req) as resp:
+            assert resp.status == 201
+            data = json.loads(resp.read().decode())
+            assert data["filename"] == "simplenote_export.zip"
+            assert "notes" in data["target_dir"]
+
+        uploaded_sn = tmp_path / "inbox" / "notes" / "simplenote_export.zip"
+        assert uploaded_sn.exists()
+        assert uploaded_sn.read_bytes() == b"dummy_simplenote_zip"
+
         # 6. GET /api/logs
         with urllib.request.urlopen(f"{base_url}/api/logs") as resp:
             assert resp.status == 200

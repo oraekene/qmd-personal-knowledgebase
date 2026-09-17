@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import collections
 import html
+import io
 import json
 import logging
 import os
@@ -25,6 +26,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -184,11 +186,12 @@ def get_corpus_stats(corpus_dir: Path) -> Dict[str, int]:
 
 def get_inbox_stats(inbox_dir: Path) -> Dict[str, int]:
     """Count pending files in inboxes."""
-    stats = {"chats": 0, "pdfs": 0, "total": 0}
+    stats = {"chats": 0, "pdfs": 0, "notes": 0, "total": 0}
     if not inbox_dir.exists():
         return stats
     chats_dir = inbox_dir / "chats"
     pdfs_dir = inbox_dir / "pdfs"
+    notes_dir = inbox_dir / "notes"
 
     root_zips = len(list(inbox_dir.glob("*.zip")))
     chat_zips = len(list(chats_dir.glob("*.zip"))) if chats_dir.exists() else 0
@@ -197,7 +200,14 @@ def get_inbox_stats(inbox_dir: Path) -> Dict[str, int]:
     pdf_files = len(list(pdfs_dir.glob("*.pdf"))) if pdfs_dir.exists() else 0
     stats["pdfs"] = pdf_files
 
-    stats["total"] = stats["chats"] + stats["pdfs"]
+    notes_count = 0
+    if notes_dir.exists():
+        notes_count += len(list(notes_dir.glob("*.zip")))
+        notes_count += len(list(notes_dir.glob("*.txt")))
+        notes_count += len(list(notes_dir.glob("*.md")))
+    stats["notes"] = notes_count
+
+    stats["total"] = stats["chats"] + stats["pdfs"] + stats["notes"]
     return stats
 
 
@@ -775,7 +785,22 @@ def make_control_plane_handler(repo_root: Path, static_dir: Path, logger: Option
                 lower = filename.lower()
 
                 if lower.endswith(".zip"):
-                    dest_dir = repo_root / "inbox" / "chats"
+                    is_notes_zip = any(k in lower for k in ("simplenote", "keep", "note"))
+                    if not is_notes_zip:
+                        try:
+                            with zipfile.ZipFile(io.BytesIO(body), "r") as zf:
+                                for name in zf.namelist():
+                                    nl = name.lower()
+                                    if "notes.json" in nl or nl.startswith("notes/") or nl.startswith("takeout/keep/"):
+                                        is_notes_zip = True
+                                        break
+                        except Exception:
+                            pass
+
+                    if is_notes_zip:
+                        dest_dir = repo_root / "inbox" / "notes"
+                    else:
+                        dest_dir = repo_root / "inbox" / "chats"
                 elif lower.endswith(".pdf"):
                     dest_dir = repo_root / "inbox" / "pdfs"
                 elif lower.endswith(".md") or lower.endswith(".txt"):
