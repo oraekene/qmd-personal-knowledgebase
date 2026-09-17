@@ -37,7 +37,8 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 ENV_PATH = REPO_ROOT / ".env"
 
 
-def check_port_listening(host: str, port: int, timeout: float = 0.5) -> bool:
+
+def check_port_listening(host: str, port: int, timeout: float = 1.0) -> bool:
     """Check if a TCP port is open and listening locally (supports IPv4 & IPv6)."""
     hosts_to_try = [host]
     if host in ("127.0.0.1", "localhost"):
@@ -51,16 +52,117 @@ def check_port_listening(host: str, port: int, timeout: float = 0.5) -> bool:
     return False
 
 
-def check_http_url(url: str, timeout: float = 1.5) -> bool:
+def check_http_url(url: str, timeout: float = 5.0) -> bool:
     """Check if an HTTP/HTTPS URL returns an OK status."""
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "QMD-ControlPlane/1.0"})
+        req = urllib.request.Request(url, headers={"User-Agent": "Claude/1.0"})
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.status in (200, 204, 302, 401)
+            return resp.status in (200, 204, 302, 401, 403, 405)
     except urllib.error.HTTPError as e:
-        return e.code in (200, 204, 302, 401)
+        return e.code in (200, 204, 302, 401, 403, 405)
     except Exception:
         return False
+
+
+def find_pids_by_port(port: int) -> List[int]:
+    """Find all PIDs actively listening on a given port."""
+    pids = set()
+    if sys.platform == "win32":
+        try:
+            res = subprocess.run(
+                ["netstat", "-ano"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            for line in res.stdout.splitlines():
+                parts = line.strip().split()
+                if len(parts) >= 5 and "LISTENING" in parts:
+                    local_addr = parts[1]
+                    pid_str = parts[-1]
+                    if local_addr.endswith(f":{port}") and pid_str.isdigit():
+                        pids.add(int(pid_str))
+        except Exception:
+            pass
+    return list(pids)
+
+
+def kill_pid(pid: int) -> None:
+    """Forcefully kill a process and its children."""
+    if pid <= 0:
+        return
+    if sys.platform == "win32":
+        try:
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True, timeout=5)
+        except Exception:
+            pass
+    else:
+        try:
+            os.kill(pid, 9)
+        except Exception:
+            pass
+
+
+class SystemLogger:
+    """Centralized thread-safe logger capturing all daemons, pipelines, and server events."""
+
+    def __init__(self, repo_root: Path, max_entries: int = 5000):
+        self.repo_root = repo_root
+        self.lock = threading.Lock()
+        self.entries: collections.deque[Dict[str, Any]] = collections.deque(maxlen=max_entries)
+        self.counter: int = 0
+        self.log_file = repo_root / "logs" / "system.log"
+        self.log_file.parent.mkdir(parents=True, exist_ok=True)
+
+    def log(self, source: str, message: str, level: str = "INFO") -> None:
+        message = message.rstrip()
+        if not message:
+            return
+        now_str = time.strftime("%Y-%m-%d %H:%M:%S")
+        with self.lock:
+            self.counter += 1
+            record = {
+                "id": self.counter,
+                "time": now_str,
+                "source": source.upper(),
+                "level": level.upper(),
+                "message": message,
+                "raw": f"[{now_str}] [{source.upper()}] [{level.upper()}] {message}",
+            }
+            self.entries.append(record)
+            try:
+                with open(self.log_file, "a", encoding="utf-8") as f:
+                    f.write(record["raw"] + "\n")
+            except Exception:
+                pass
+
+    def get_logs(
+        self, since_id: int = 0, source: Optional[str] = None, level: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        with self.lock:
+            filtered = [e for e in self.entries if e["id"] > since_id]
+            if source and source.upper() != "ALL":
+                s = source.upper()
+                if s == "DAEMONS":
+                    filtered = [e for e in filtered if e["source"] in ("QMD", "AUTH_PROXY", "TUNNEL", "SUPERVISOR")]
+                elif s == "PIPELINES":
+                    filtered = [e for e in filtered if e["source"] in ("PIPELINE", "TASK")]
+                else:
+                    filtered = [e for e in filtered if e["source"] == s]
+            if level and level.upper() != "ALL":
+                l = level.upper()
+                if l == "ERRORS":
+                    filtered = [e for e in filtered if e["level"] in ("ERROR", "WARNING")]
+                else:
+                    filtered = [e for e in filtered if e["level"] == l]
+            return filtered
+
+    def get_raw_lines(self, since_id: int = 0) -> List[str]:
+        return [e["raw"] for e in self.get_logs(since_id=since_id)]
+
+    def count(self) -> int:
+        with self.lock:
+            return len(self.entries)
 
 
 def get_corpus_stats(corpus_dir: Path) -> Dict[str, int]:
@@ -140,11 +242,28 @@ def write_env_dict(path: Path, updates: Dict[str, str]) -> None:
     path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
 
 
+def _stream_output(proc: subprocess.Popen, source: str, sys_logger: SystemLogger) -> None:
+    def _reader():
+        try:
+            if proc.stdout:
+                for line in iter(proc.stdout.readline, ""):
+                    clean = line.rstrip()
+                    if clean:
+                        level = "ERROR" if ("error" in clean.lower() or "exception" in clean.lower() or "fatal" in clean.lower()) else "INFO"
+                        sys_logger.log(source, clean, level=level)
+        except Exception as e:
+            sys_logger.log(source, f"Stream reader exception: {e}", level="ERROR")
+
+    t = threading.Thread(target=_reader, daemon=True)
+    t.start()
+
+
 class TaskRunner:
     """Manages background CLI pipelines and captures output logs."""
 
-    def __init__(self, repo_root: Path):
+    def __init__(self, repo_root: Path, logger: Optional[SystemLogger] = None):
         self.repo_root = repo_root
+        self.logger = logger or SystemLogger(repo_root)
         self.lock = threading.Lock()
         self.current_process: Optional[subprocess.Popen] = None
         self.current_action: str = ""
@@ -184,10 +303,12 @@ class TaskRunner:
                     if self.current_process.poll() is None:
                         self.current_process.kill()
                     self.logs.append("[Control Plane] Process terminated by user.")
+                    self.logger.log("PIPELINE", "Process terminated by user.", level="WARNING")
                     self.is_running = False
                     return True
                 except Exception as e:
                     self.logs.append(f"[Control Plane] Error terminating: {e}")
+                    self.logger.log("PIPELINE", f"Error terminating: {e}", level="ERROR")
             return False
 
     def trigger(self, action: str) -> bool:
@@ -226,7 +347,9 @@ class TaskRunner:
             self.exit_code = None
             self.start_time = time.time()
             self.logs.clear()
-            self.logs.append(f"[Control Plane] Starting action '{action}': {' '.join(cmd)}")
+            msg = f"Starting action '{action}': {' '.join(cmd)}"
+            self.logs.append(f"[Control Plane] {msg}")
+            self.logger.log("PIPELINE", msg)
 
             def _worker():
                 try:
@@ -244,8 +367,11 @@ class TaskRunner:
 
                     for line in iter(proc.stdout.readline, ""):
                         clean_line = line.rstrip()
-                        with self.lock:
-                            self.logs.append(clean_line)
+                        if clean_line:
+                            with self.lock:
+                                self.logs.append(clean_line)
+                            level = "ERROR" if "error" in clean_line.lower() else "INFO"
+                            self.logger.log("PIPELINE", clean_line, level=level)
 
                     proc.wait()
                     with self.lock:
@@ -253,11 +379,14 @@ class TaskRunner:
                         self.is_running = False
                         status_str = "SUCCESS" if proc.returncode == 0 else f"FAILED (exit {proc.returncode})"
                         self.logs.append(f"[Control Plane] Action '{action}' finished: {status_str}")
+                    level = "INFO" if proc.returncode == 0 else "ERROR"
+                    self.logger.log("PIPELINE", f"Action '{action}' finished: {status_str}", level=level)
                 except Exception as e:
                     with self.lock:
                         self.exit_code = -1
                         self.is_running = False
                         self.logs.append(f"[Control Plane] Exception running action '{action}': {e}")
+                    self.logger.log("PIPELINE", f"Exception running action '{action}': {e}", level="ERROR")
 
             t = threading.Thread(target=_worker, daemon=True)
             t.start()
@@ -265,10 +394,11 @@ class TaskRunner:
 
 
 class DaemonSupervisor:
-    """Tracks and controls background daemons (QMD, Auth Proxy, Cloudflare Tunnel)."""
+    """Tracks, controls, and streams logs from background daemons."""
 
-    def __init__(self, repo_root: Path):
+    def __init__(self, repo_root: Path, logger: Optional[SystemLogger] = None):
         self.repo_root = repo_root
+        self.logger = logger or SystemLogger(repo_root)
         self.processes: Dict[str, subprocess.Popen] = {}
         self.lock = threading.Lock()
 
@@ -277,59 +407,128 @@ class DaemonSupervisor:
             env = os.environ.copy()
             env_file_dict = read_env_dict(self.repo_root / ".env")
             env.update(env_file_dict)
-
+            env["PYTHONUNBUFFERED"] = "1"
             use_shell = sys.platform == "win32"
 
             if name == "qmd":
-                if check_port_listening("127.0.0.1", 8181):
-                    return {"status": "already_running", "message": "QMD port 8181 is already active"}
+                # Clean up any stale PIDs on 8181 before launching
+                for pid in find_pids_by_port(8181):
+                    self.logger.log("QMD", f"Killing stale PID {pid} on port 8181 before starting", level="WARNING")
+                    kill_pid(pid)
+                    time.sleep(0.5)
+
                 env["QMD_ALLOWED_ORIGINS"] = "*"
                 if sys.platform == "win32":
                     cmd = ["cmd.exe", "/c", str(self.repo_root / "qmd.cmd"), "mcp", "--http", "--port", "8181", "--host", "0.0.0.0"]
                 else:
                     cmd = ["node", "qmd-main/node_modules/tsx/dist/cli.mjs", "qmd-main/src/cli/qmd.ts", "mcp", "--http", "--port", "8181", "--host", "0.0.0.0"]
-                proc = subprocess.Popen(cmd, cwd=str(self.repo_root), env=env)
+
+                proc = subprocess.Popen(
+                    cmd,
+                    cwd=str(self.repo_root),
+                    env=env,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                )
                 self.processes["qmd"] = proc
-                return {"status": "started", "name": "qmd"}
+                _stream_output(proc, "QMD", self.logger)
+                self.logger.log("QMD", f"QMD MCP Server launched (PID {proc.pid}) on port 8181")
+                return {"status": "started", "name": "qmd", "pid": proc.pid}
 
             elif name == "auth_proxy":
-                if check_port_listening("127.0.0.1", 3210):
-                    return {"status": "already_running", "message": "Auth Proxy port 3210 is already active"}
-                cmd = [sys.executable, "-m", "auth_proxy"]
-                proc = subprocess.Popen(cmd, cwd=str(self.repo_root), env=env, shell=use_shell)
+                # Clean up any stale PIDs on 3210 before launching
+                for pid in find_pids_by_port(3210):
+                    self.logger.log("AUTH_PROXY", f"Killing stale PID {pid} on port 3210 before starting", level="WARNING")
+                    kill_pid(pid)
+                    time.sleep(0.5)
+
+                cmd = [sys.executable, "-u", "-m", "auth_proxy"]
+                proc = subprocess.Popen(
+                    cmd,
+                    cwd=str(self.repo_root),
+                    env=env,
+                    shell=use_shell,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                )
                 self.processes["auth_proxy"] = proc
-                return {"status": "started", "name": "auth_proxy"}
+                _stream_output(proc, "AUTH_PROXY", self.logger)
+                self.logger.log("AUTH_PROXY", f"Auth Proxy launched (PID {proc.pid}) on port 3210")
+                return {"status": "started", "name": "auth_proxy", "pid": proc.pid}
 
             elif name == "tunnel":
                 token = env.get("TUNNEL_TOKEN", "")
                 if not token:
+                    self.logger.log("TUNNEL", "TUNNEL_TOKEN not configured in .env", level="ERROR")
                     return {"status": "error", "message": "TUNNEL_TOKEN not configured in .env"}
+
+                # Kill any existing cloudflared instances
+                if sys.platform == "win32":
+                    subprocess.run(["taskkill", "/F", "/IM", "cloudflared.exe"], capture_output=True)
+                    time.sleep(0.5)
+
                 cmd = ["cloudflared", "tunnel", "run", "--token", token]
-                proc = subprocess.Popen(cmd, cwd=str(self.repo_root), env=env, shell=use_shell)
+                proc = subprocess.Popen(
+                    cmd,
+                    cwd=str(self.repo_root),
+                    env=env,
+                    shell=use_shell,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                )
                 self.processes["tunnel"] = proc
-                return {"status": "started", "name": "tunnel"}
+                _stream_output(proc, "TUNNEL", self.logger)
+                self.logger.log("TUNNEL", f"Cloudflare Tunnel launched (PID {proc.pid})")
+                return {"status": "started", "name": "tunnel", "pid": proc.pid}
 
             return {"status": "unknown_daemon", "name": name}
 
     def stop_daemon(self, name: str) -> Dict[str, Any]:
         with self.lock:
-            proc = self.processes.get(name)
+            killed_pids = []
+            proc = self.processes.pop(name, None)
             if proc:
                 try:
                     proc.terminate()
                     time.sleep(0.5)
                     if proc.poll() is None:
                         proc.kill()
-                    del self.processes[name]
-                    return {"status": "stopped", "name": name}
-                except Exception as e:
-                    return {"status": "error", "name": name, "message": str(e)}
-            return {"status": "not_managed", "name": name, "message": "Process was not started by this supervisor"}
+                    killed_pids.append(proc.pid)
+                except Exception:
+                    pass
+
+            if name == "qmd":
+                for pid in find_pids_by_port(8181):
+                    kill_pid(pid)
+                    killed_pids.append(pid)
+            elif name == "auth_proxy":
+                for pid in find_pids_by_port(3210):
+                    kill_pid(pid)
+                    killed_pids.append(pid)
+            elif name == "tunnel":
+                if sys.platform == "win32":
+                    subprocess.run(["taskkill", "/F", "/IM", "cloudflared.exe"], capture_output=True)
+
+            self.logger.log("SUPERVISOR", f"Stopped daemon '{name}' (cleaned PIDs: {killed_pids})")
+            return {"status": "stopped", "name": name, "killed_pids": killed_pids}
+
+    def restart_daemon(self, name: str) -> Dict[str, Any]:
+        self.stop_daemon(name)
+        time.sleep(1.0)
+        return self.start_daemon(name)
 
 
-def make_control_plane_handler(repo_root: Path, static_dir: Path):
-    runner = TaskRunner(repo_root)
-    supervisor = DaemonSupervisor(repo_root)
+
+def make_control_plane_handler(repo_root: Path, static_dir: Path, logger: Optional[SystemLogger] = None):
+    system_logger = logger or SystemLogger(repo_root)
+    runner = TaskRunner(repo_root, logger=system_logger)
+    supervisor = DaemonSupervisor(repo_root, logger=system_logger)
 
     class Handler(SimpleHTTPRequestHandler):
         def __init__(self, *args, **kwargs):
@@ -398,24 +597,52 @@ def make_control_plane_handler(repo_root: Path, static_dir: Path):
 
             if path == "/api/logs":
                 since = int(params.get("since", [0])[0])
-                logs = runner.get_logs(since_index=since)
+                source = params.get("source", ["ALL"])[0]
+                level = params.get("level", ["ALL"])[0]
+                entries = system_logger.get_logs(since_id=since, source=source, level=level)
+                last_id = entries[-1]["id"] if entries else since
                 self.send_json(200, {
                     "status": runner.get_status(),
-                    "logs": logs,
-                    "total": len(runner.logs)
+                    "logs": [e["raw"] for e in entries],
+                    "entries": entries,
+                    "last_id": last_id,
+                    "total": system_logger.count(),
                 })
+                return
+
+            if path == "/api/logs/export":
+                try:
+                    if system_logger.log_file.exists():
+                        content = system_logger.log_file.read_bytes()
+                    else:
+                        content = "\n".join([e["raw"] for e in list(system_logger.entries)]).encode("utf-8")
+                except Exception as e:
+                    content = f"Error reading log file: {e}".encode("utf-8")
+
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Content-Disposition", 'attachment; filename="qmd-system.log"')
+                self.send_header("Content-Length", str(len(content)))
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(content)
                 return
 
             if path == "/api/search":
                 query = params.get("q", [""])[0].strip()
+                filter_json = params.get("filter", [""])[0].strip()
                 if not query:
                     self.send_json(400, {"error": "Missing query 'q'"})
                     return
 
+                qmd_args = ["search", query]
+                if filter_json:
+                    qmd_args.extend(["--filter", filter_json])
+
                 if sys.platform == "win32":
-                    cmd = ["cmd.exe", "/c", str(repo_root / "qmd.cmd"), "search", query]
+                    cmd = ["cmd.exe", "/c", str(repo_root / "qmd.cmd")] + qmd_args
                 else:
-                    cmd = ["qmd", "search", query]
+                    cmd = ["qmd"] + qmd_args
 
                 try:
                     res = subprocess.run(
@@ -426,7 +653,7 @@ def make_control_plane_handler(repo_root: Path, static_dir: Path):
                         timeout=45,
                     )
                     raw_out = res.stdout if res.stdout else res.stderr
-                    self.send_json(200, {"query": query, "output": raw_out, "exit_code": res.returncode})
+                    self.send_json(200, {"query": query, "filter": filter_json, "output": raw_out, "exit_code": res.returncode})
                 except subprocess.TimeoutExpired:
                     self.send_json(504, {"error": "Search timed out"})
                 except Exception as e:
@@ -506,14 +733,28 @@ def make_control_plane_handler(repo_root: Path, static_dir: Path):
                         self.send_json(200, res)
                     return
                 elif action == "stop":
-                    res = supervisor.stop_daemon(daemon)
-                    self.send_json(200, res)
+                    if daemon == "all":
+                        res1 = supervisor.stop_daemon("qmd")
+                        res2 = supervisor.stop_daemon("auth_proxy")
+                        res3 = supervisor.stop_daemon("tunnel")
+                        self.send_json(200, {"results": [res1, res2, res3]})
+                    else:
+                        res = supervisor.stop_daemon(daemon)
+                        self.send_json(200, res)
                     return
                 elif action == "restart":
-                    supervisor.stop_daemon(daemon)
-                    time.sleep(1.0)
-                    res = supervisor.start_daemon(daemon)
-                    self.send_json(200, res)
+                    if daemon == "all":
+                        supervisor.stop_daemon("qmd")
+                        supervisor.stop_daemon("auth_proxy")
+                        supervisor.stop_daemon("tunnel")
+                        time.sleep(1.0)
+                        res1 = supervisor.start_daemon("qmd")
+                        res2 = supervisor.start_daemon("auth_proxy")
+                        res3 = supervisor.start_daemon("tunnel")
+                        self.send_json(200, {"results": [res1, res2, res3]})
+                    else:
+                        res = supervisor.restart_daemon(daemon)
+                        self.send_json(200, res)
                     return
 
                 self.send_json(400, {"error": "Invalid action or daemon"})

@@ -163,6 +163,14 @@ def test_control_plane_http_server(tmp_path: Path):
             data = json.loads(resp.read().decode())
             assert "logs" in data
             assert "status" in data
+            assert "entries" in data
+            assert "last_id" in data
+
+        # 7. GET /api/logs/export
+        with urllib.request.urlopen(f"{base_url}/api/logs/export") as resp:
+            assert resp.status == 200
+            assert resp.headers.get("Content-Type").startswith("text/plain")
+            assert "attachment" in resp.headers.get("Content-Disposition")
 
     finally:
         server.shutdown()

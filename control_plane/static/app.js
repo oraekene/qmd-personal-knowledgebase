@@ -1,15 +1,31 @@
 // QMD Knowledgebase Control Plane Frontend Application
-let lastLogIndex = 0;
-let isPolling = false;
+let lastLogId = 0;
+let currentFilter = "ALL";
+let allLogEntries = [];
+const MAX_LOG_ENTRIES = 3000;
 
 document.addEventListener("DOMContentLoaded", () => {
   fetchStatus();
   setInterval(fetchStatus, 3000);
   setupDropzone();
 
+  // Start continuous real-time logging across all daemons and pipelines
+  pollLogs();
+  setInterval(pollLogs, 1500);
+
   document.getElementById("btn-open-settings").addEventListener("click", openSettings);
-  document.getElementById("btn-start-all-daemons").addEventListener("click", () => controlDaemon("all", "start"));
+  document.getElementById("btn-start-all-daemons").addEventListener("click", () => controlDaemon("all", "restart"));
 });
+
+function escapeHtml(str) {
+  if (!str) return "";
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
 
 // Toast notification helper
 function showToast(message, isError = false) {
@@ -58,7 +74,6 @@ async function fetchStatus() {
       taskBadge.className = "badge badge-yellow";
       taskBadge.innerText = `Running: ${task.action} (${task.elapsed_seconds}s)`;
       stopBtn.style.display = "inline-block";
-      pollLogs();
     } else {
       if (task.exit_code === 0) {
         taskBadge.className = "badge badge-green";
@@ -71,10 +86,6 @@ async function fetchStatus() {
         taskBadge.innerText = "Idle";
       }
       stopBtn.style.display = "none";
-      if (isPolling) {
-        pollLogs(); // fetch final lines
-        isPolling = false;
-      }
     }
   } catch (e) {
     console.error("Status fetch error:", e);
@@ -93,26 +104,137 @@ function updateBadge(id, isOk) {
   }
 }
 
-// Fetch streaming execution logs
+// Log Filter Switcher
+function setLogFilter(filter) {
+  currentFilter = filter;
+  const buttons = ["filter-all", "filter-daemons", "filter-pipelines", "filter-errors"];
+  buttons.forEach(bId => {
+    const btn = document.getElementById(bId);
+    if (btn) btn.classList.remove("active");
+  });
+
+  const activeMap = {
+    "ALL": "filter-all",
+    "DAEMONS": "filter-daemons",
+    "PIPELINES": "filter-pipelines",
+    "ERRORS": "filter-errors",
+  };
+  const activeBtn = document.getElementById(activeMap[filter]);
+  if (activeBtn) activeBtn.classList.add("active");
+
+  renderLogs();
+}
+
+function getBadgeClassForSource(source) {
+  const s = (source || "").toLowerCase();
+  if (s.includes("qmd")) return "badge-qmd";
+  if (s.includes("proxy") || s.includes("auth")) return "badge-auth_proxy";
+  if (s.includes("tunnel")) return "badge-tunnel";
+  if (s.includes("pipeline") || s.includes("task")) return "badge-pipeline";
+  if (s.includes("supervisor")) return "badge-supervisor";
+  return "badge-system";
+}
+
+// Render log entries in terminal based on active filter
+function renderLogs() {
+  const terminal = document.getElementById("terminal");
+  if (!terminal) return;
+
+  const filtered = allLogEntries.filter(entry => {
+    const src = (entry.source || "").toUpperCase();
+    const lvl = (entry.level || "").toUpperCase();
+    const msg = (entry.message || "").toLowerCase();
+
+    if (currentFilter === "DAEMONS") {
+      return ["QMD", "AUTH_PROXY", "TUNNEL", "SUPERVISOR"].includes(src);
+    }
+    if (currentFilter === "PIPELINES") {
+      return ["PIPELINE", "TASK"].includes(src);
+    }
+    if (currentFilter === "ERRORS") {
+      return lvl === "ERROR" || lvl === "WARNING" || msg.includes("error") || msg.includes("exception") || msg.includes("failed");
+    }
+    return true; // ALL
+  });
+
+  const countIndicator = document.getElementById("log-count-indicator");
+  if (countIndicator) {
+    countIndicator.innerText = `${filtered.length} / ${allLogEntries.length} entries`;
+  }
+
+  terminal.innerHTML = "";
+  if (filtered.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "terminal-line text-muted";
+    empty.textContent = `[System] No log entries matching filter '${currentFilter}'.`;
+    terminal.appendChild(empty);
+    return;
+  }
+
+  const fragment = document.createDocumentFragment();
+  filtered.forEach(entry => {
+    const div = document.createElement("div");
+    const isErr = entry.level === "ERROR" || (entry.message && entry.message.toLowerCase().includes("error:"));
+    const isWarn = entry.level === "WARNING";
+    div.className = `terminal-entry ${isErr ? "entry-error" : isWarn ? "entry-warning" : ""}`;
+
+    const timeStr = (entry.time || "").split(" ")[1] || entry.time || "";
+    const badgeClass = getBadgeClassForSource(entry.source);
+
+    let html = `<span class="log-time">[${escapeHtml(timeStr)}]</span>`;
+    html += `<span class="log-chip ${badgeClass}">${escapeHtml(entry.source || "SYS")}</span>`;
+    if (isErr) {
+      html += `<span class="log-chip badge-error">ERR</span>`;
+    } else if (isWarn) {
+      html += `<span class="log-chip badge-warning">WARN</span>`;
+    }
+    html += `<span class="log-msg">${escapeHtml(entry.message || entry.raw || "")}</span>`;
+
+    div.innerHTML = html;
+    fragment.appendChild(div);
+  });
+
+  terminal.appendChild(fragment);
+
+  const auto = document.getElementById("autoscroll");
+  if (auto && auto.checked) {
+    terminal.scrollTop = terminal.scrollHeight;
+  }
+}
+
+// Fetch streaming execution logs continuously
 async function pollLogs() {
   try {
-    const res = await fetch(`/api/logs?since=${lastLogIndex}`);
+    const res = await fetch(`/api/logs?since=${lastLogId}`);
     if (!res.ok) return;
     const data = await res.json();
-    const terminal = document.getElementById("terminal");
 
-    if (data.logs && data.logs.length > 0) {
-      data.logs.forEach(line => {
-        const div = document.createElement("div");
-        div.className = "terminal-line";
-        div.textContent = line;
-        terminal.appendChild(div);
+    let hasNew = false;
+    if (data.entries && data.entries.length > 0) {
+      data.entries.forEach(entry => {
+        allLogEntries.push(entry);
       });
-      lastLogIndex = data.total;
-
-      if (document.getElementById("autoscroll").checked) {
-        terminal.scrollTop = terminal.scrollHeight;
+      if (allLogEntries.length > MAX_LOG_ENTRIES) {
+        allLogEntries = allLogEntries.slice(allLogEntries.length - MAX_LOG_ENTRIES);
       }
+      lastLogId = data.last_id || (data.entries[data.entries.length - 1].id) || lastLogId;
+      hasNew = true;
+    } else if (data.logs && data.logs.length > 0 && (!data.entries || data.entries.length === 0)) {
+      data.logs.forEach(line => {
+        allLogEntries.push({
+          id: ++lastLogId,
+          time: new Date().toLocaleTimeString(),
+          source: "SYSTEM",
+          level: line.toLowerCase().includes("error") ? "ERROR" : "INFO",
+          message: line,
+          raw: line
+        });
+      });
+      hasNew = true;
+    }
+
+    if (hasNew) {
+      renderLogs();
     }
   } catch (e) {
     console.error("Log poll error:", e);
@@ -120,8 +242,8 @@ async function pollLogs() {
 }
 
 function clearLogs() {
-  document.getElementById("terminal").innerHTML = "";
-  lastLogIndex = 0;
+  allLogEntries = [];
+  renderLogs();
 }
 
 // Trigger Pipeline Action
@@ -137,9 +259,7 @@ async function runAction(action) {
       showToast(data.error || "Action failed to start", true);
     } else {
       showToast(`Started: ${action}`);
-      isPolling = true;
-      lastLogIndex = 0;
-      clearLogs();
+      pollLogs();
       fetchStatus();
     }
   } catch (e) {
@@ -180,6 +300,8 @@ async function controlDaemon(daemon, action) {
 // Interactive Search Tester
 async function executeSearch() {
   const q = document.getElementById("search-query").value.trim();
+  const filterInput = document.getElementById("search-filter");
+  const filterVal = filterInput ? filterInput.value.trim() : "";
   if (!q) return;
 
   const btn = document.getElementById("btn-search");
@@ -187,7 +309,11 @@ async function executeSearch() {
   btn.innerText = "Searching...";
 
   try {
-    const res = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
+    let url = `/api/search?q=${encodeURIComponent(q)}`;
+    if (filterVal) {
+      url += `&filter=${encodeURIComponent(filterVal)}`;
+    }
+    const res = await fetch(url);
     const data = await res.json();
     const box = document.getElementById("search-results-box");
     const pre = document.getElementById("search-raw-output");

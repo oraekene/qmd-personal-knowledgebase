@@ -15,7 +15,7 @@ import os
 import sys
 import urllib.error
 import urllib.request
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import ClassVar
 
 from auth_proxy.oauth import handle_oauth_request
@@ -85,6 +85,7 @@ def make_handler(token: str, target: str) -> type[BaseHTTPRequestHandler]:
             headers = {k: v for k, v in self.headers.items()}
             # OAuth shim: intercept discovery, dynamic registration, authorize, and token exchange
             if handle_oauth_request(self, self.command, self.path, headers, body, token):
+                print(f"[AUTH_PROXY] Handled OAuth: {self.command} {self.path}", flush=True)
                 return
             if self.command == "OPTIONS":
                 self.send_response(204)
@@ -99,9 +100,11 @@ def make_handler(token: str, target: str) -> type[BaseHTTPRequestHandler]:
                 self.end_headers()
                 return
             if not check_auth(headers, token):
+                print(f"[AUTH_PROXY] 401 Unauthorized: {self.command} {self.path}", flush=True)
                 _send_unauthorized(self)
                 return
             if not check_origin(headers, _allowed_origins()):
+                print(f"[AUTH_PROXY] 403 Forbidden Origin '{headers.get('Origin')}' for {self.path}", flush=True)
                 self.send_response(403)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
@@ -152,6 +155,7 @@ def make_handler(token: str, target: str) -> type[BaseHTTPRequestHandler]:
                     self.send_header("Content-Length", str(len(resp_body)))
                     self.end_headers()
                     self.wfile.write(resp_body)
+                    print(f"[AUTH_PROXY] 200 Forwarded {self.command} {self.path} ({len(resp_body)} bytes)", flush=True)
             except urllib.error.HTTPError as e:
                 # Forward upstream error verbatim — status/headers/body, stripping hop-by-hop headers
                 err_body = e.read() if hasattr(e, "read") else b""
@@ -165,6 +169,7 @@ def make_handler(token: str, target: str) -> type[BaseHTTPRequestHandler]:
                 self.send_header("Content-Length", str(len(err_body)))
                 self.end_headers()
                 self.wfile.write(err_body)
+                print(f"[AUTH_PROXY] Upstream {e.code} for {self.command} {self.path}", flush=True)
             except Exception as e:
                 logger.exception("Proxy upstream forwarding error")
                 err_bytes = json.dumps({"error": f"Bad Gateway: {e}"}).encode("utf-8")
@@ -173,6 +178,7 @@ def make_handler(token: str, target: str) -> type[BaseHTTPRequestHandler]:
                 self.send_header("Content-Length", str(len(err_bytes)))
                 self.end_headers()
                 self.wfile.write(err_bytes)
+                print(f"[AUTH_PROXY] 502 Bad Gateway for {self.command} {self.path}: {e}", flush=True)
 
         # Verb-preserving: each HTTP verb delegates to _proxy_request
         def do_GET(self) -> None:  # noqa: N802
@@ -235,11 +241,13 @@ def main() -> None:
         '-d \'{"jsonrpc":"2.0","id":1,"method":"tools/list"}\''
     )
     try:
-        HTTPServer(("127.0.0.1", listen_port), handler_cls).serve_forever()
+        server = ThreadingHTTPServer(("127.0.0.1", listen_port), handler_cls)
+        server.serve_forever()
     except KeyboardInterrupt:
         print("\nShutting down.", file=sys.stderr)
 
 
 if __name__ == "__main__":
     main()
+
 

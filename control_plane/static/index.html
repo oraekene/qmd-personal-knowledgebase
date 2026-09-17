@@ -75,6 +75,7 @@
             </div>
             <div class="card-footer">
               <button class="btn btn-xs btn-outline" onclick="controlDaemon('tunnel', 'start')">Start</button>
+              <button class="btn btn-xs btn-outline" onclick="controlDaemon('tunnel', 'restart')">Restart</button>
               <a href="https://kb.parmeterai.space/.well-known/oauth-authorization-server" target="_blank" class="btn btn-xs btn-outline">Probe</a>
             </div>
           </div>
@@ -156,18 +157,30 @@
       <!-- Section 3: Real-Time Execution Console -->
       <section class="section">
         <div class="section-header">
-          <h2>Live Log Console</h2>
+          <div>
+            <h2>Live Log Console</h2>
+            <span class="subtitle-hint">Real-time activity & errors across QMD, Auth Proxy, Cloudflare Tunnel, and pipelines</span>
+          </div>
           <div class="console-controls">
             <span class="badge" id="task-badge">Idle</span>
             <button class="btn btn-xs btn-outline" id="btn-stop-task" onclick="stopTask()" style="display:none;">Stop Task</button>
+            <a href="/api/logs/export" download="qmd-system.log" class="btn btn-xs btn-outline" id="btn-export-log">📥 Export Log</a>
             <button class="btn btn-xs btn-outline" onclick="clearLogs()">Clear</button>
             <label class="checkbox-label">
               <input type="checkbox" id="autoscroll" checked> Auto-scroll
             </label>
           </div>
         </div>
+        <div class="log-filters-bar">
+          <span style="font-size: 0.8rem; color: var(--text-muted); font-weight: 600; text-transform: uppercase;">Filter:</span>
+          <button class="btn btn-xs btn-filter active" id="filter-all" onclick="setLogFilter('ALL')">All Activity</button>
+          <button class="btn btn-xs btn-filter" id="filter-daemons" onclick="setLogFilter('DAEMONS')">Daemons (QMD / Proxy / Tunnel)</button>
+          <button class="btn btn-xs btn-filter" id="filter-pipelines" onclick="setLogFilter('PIPELINES')">Pipelines & Sync</button>
+          <button class="btn btn-xs btn-filter" id="filter-errors" onclick="setLogFilter('ERRORS')">⚠️ Errors Only</button>
+          <span id="log-count-indicator" style="margin-left: auto; font-size: 0.8rem; color: var(--text-muted); font-family: monospace;">0 entries</span>
+        </div>
         <div class="terminal-window" id="terminal">
-          <div class="terminal-line text-muted">[System] Control Plane ready. Output from triggered actions will stream here.</div>
+          <div class="terminal-line text-muted">[System] Control Plane ready. Output from all daemons, pipelines, and requests will stream here live.</div>
         </div>
       </section>
 
@@ -224,6 +237,9 @@
             <div class="search-input-group">
               <input type="text" id="search-query" placeholder="e.g. OCR selection rationale, solar sizing algorithm, prompt injection..." class="input-text">
               <button type="submit" class="btn btn-primary" id="btn-search">Search QMD</button>
+            </div>
+            <div style="margin-top: 8px;">
+              <input type="text" id="search-filter" placeholder='Optional Metadata Filter JSON AST e.g. {"key":"silo","operator":"eq","value":"github"}' class="input-text" style="font-size: 0.85rem; font-family: monospace;">
             </div>
           </form>
           <div id="search-results-box" class="search-results-box" style="display:none;">

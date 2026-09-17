@@ -235,3 +235,35 @@ def test_qmd_bm25_unified_and_scoped_search():
         m = re.search(r"content_hash:\s*([a-f0-9]+)", text_nebula)
         assert m and m.group(1) == expected_hash
         assert len(expected_hash) == 64
+
+
+def test_metadata_filter_cli_and_compound_tokenization():
+    """Verify that node CLI supports --filter AST parsing and compound FTS5 queries."""
+    import subprocess
+    import json
+    from pathlib import Path
+
+    repo_root = Path(__file__).parent.parent
+    cmd_path = repo_root / "qmd.cmd"
+
+    # 1. Test CLI help lists --filter
+    res = subprocess.run(
+        ["cmd.exe", "/c", str(cmd_path), "--help"],
+        capture_output=True,
+        text=True,
+        timeout=45,
+    )
+    assert res.returncode == 0
+    assert "--filter <json>" in res.stdout
+
+    # 2. Test invalid filter json reports actionable error
+    res_bad = subprocess.run(
+        ["cmd.exe", "/c", str(cmd_path), "search", "test", "--filter", "{invalid}"],
+        capture_output=True,
+        text=True,
+        timeout=45,
+    )
+    assert res_bad.returncode != 0
+    assert "Invalid --filter JSON" in (res_bad.stdout + res_bad.stderr)
+
+
