@@ -16,9 +16,15 @@ import sys
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import ClassVar
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 from auth_proxy.oauth import handle_oauth_request
+from auth_proxy.prompt_engine import get_prompt_response, list_prompts, synthesize_system_prompt
 from auth_proxy.proxy import _UNAUTHORIZED_BODY, _UNAUTHORIZED_HEADERS, check_auth, check_origin
 
 logger = logging.getLogger("auth_proxy")
@@ -111,13 +117,55 @@ def make_handler(token: str, target: str) -> type[BaseHTTPRequestHandler]:
                 self.wfile.write(b'{"error": "Forbidden origin"}')
                 return
 
-            # If tools/call query in cpu-only mode without explicit rerank, default to rerank=False for sub-second response
-            retrieval_mode = os.getenv("RETRIEVAL_MODE", "cpu-only").lower()
-            if retrieval_mode == "cpu-only" and self.command == "POST" and self.path.startswith("/mcp") and body:
+            req_is_initialize = False
+            if self.command == "POST" and self.path.startswith("/mcp") and body:
                 try:
                     payload = json.loads(body.decode("utf-8"))
+                    m = payload.get("method")
+
+                    # Handle MCP prompts/list directly
+                    if m == "prompts/list":
+                        resp_payload = {"jsonrpc": "2.0", "id": payload.get("id"), "result": {"prompts": list_prompts()}}
+                        resp_body = json.dumps(resp_payload).encode("utf-8")
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/json")
+                        self.send_header("Content-Length", str(len(resp_body)))
+                        self.end_headers()
+                        self.wfile.write(resp_body)
+                        return
+
+                    # Handle MCP prompts/get directly
+                    if m == "prompts/get":
+                        params = payload.get("params", {})
+                        p_name = params.get("name", "")
+                        p_args = params.get("arguments", {})
+                        try:
+                            prompt_res = get_prompt_response(p_name, p_args, REPO_ROOT)
+                            resp_payload = {"jsonrpc": "2.0", "id": payload.get("id"), "result": prompt_res}
+                            status_code = 200
+                        except ValueError as err:
+                            resp_payload = {
+                                "jsonrpc": "2.0",
+                                "id": payload.get("id"),
+                                "error": {"code": -32602, "message": str(err)},
+                            }
+                            status_code = 400
+                        resp_body = json.dumps(resp_payload).encode("utf-8")
+                        self.send_response(status_code)
+                        self.send_header("Content-Type", "application/json")
+                        self.send_header("Content-Length", str(len(resp_body)))
+                        self.end_headers()
+                        self.wfile.write(resp_body)
+                        return
+
+                    if m == "initialize":
+                        req_is_initialize = True
+
+                    # If tools/call query in cpu-only mode without explicit rerank, default to rerank=False for sub-second response
+                    retrieval_mode = os.getenv("RETRIEVAL_MODE", "cpu-only").lower()
                     if (
-                        payload.get("method") == "tools/call"
+                        retrieval_mode == "cpu-only"
+                        and m == "tools/call"
                         and payload.get("params", {}).get("name") == "query"
                     ):
                         args = payload.setdefault("params", {}).setdefault("arguments", {})
@@ -163,6 +211,42 @@ def make_handler(token: str, target: str) -> type[BaseHTTPRequestHandler]:
 
                 with resp_cm as resp:
                     resp_body = resp.read()
+
+                    # If response is to initialize, inject synthesized system prompt instructions & prompts capability
+                    if req_is_initialize and resp.status == 200:
+                        try:
+                            raw_text = resp_body.decode("utf-8")
+                            is_sse = False
+                            prefix = ""
+                            suffix = ""
+                            json_text = raw_text
+
+                            if "data: " in raw_text:
+                                is_sse = True
+                                lines = raw_text.splitlines(keepends=True)
+                                for i, line in enumerate(lines):
+                                    if line.startswith("data: "):
+                                        prefix = "".join(lines[:i]) + "data: "
+                                        suffix = "".join(lines[i + 1:])
+                                        json_text = line[len("data: "):].strip()
+                                        break
+
+                            init_data = json.loads(json_text)
+                            if "result" in init_data:
+                                qmd_instructions = init_data["result"].get("instructions", "")
+                                synthesized = synthesize_system_prompt(REPO_ROOT)
+                                combined = f"{synthesized}\n\n---\n\n{qmd_instructions}" if qmd_instructions else synthesized
+                                init_data["result"]["instructions"] = combined
+                                caps = init_data["result"].setdefault("capabilities", {})
+                                caps["prompts"] = {}
+
+                                if is_sse:
+                                    resp_body = (prefix + json.dumps(init_data) + suffix).encode("utf-8")
+                                else:
+                                    resp_body = json.dumps(init_data).encode("utf-8")
+                        except Exception as ex:
+                            logger.warning("Failed to inject initialize instructions: %s", ex)
+
                     self.send_response(resp.status)
                     # Strip hop-by-hop headers to prevent protocol breakage (e.g. dechunked body with chunked header)
                     for k, v in resp.headers.items():

@@ -18,6 +18,7 @@
         </div>
       </div>
       <div class="header-actions">
+        <button id="btn-open-prompts" class="btn btn-secondary">🎭 Persona & Prompts</button>
         <button id="btn-open-settings" class="btn btn-secondary">⚙️ Settings & Secrets</button>
         <button id="btn-start-all-daemons" class="btn btn-primary">⚡ Start All Daemons</button>
       </div>
@@ -354,6 +355,71 @@
             <div class="form-actions">
               <button type="button" class="btn btn-secondary" onclick="closeSettings()">Cancel</button>
               <button type="submit" class="btn btn-primary" id="btn-save-settings">Save Configurations</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <!-- Persona & Prompts Modal -->
+    <div class="modal" id="prompts-modal" style="display:none;">
+      <div class="modal-overlay" onclick="closePrompts()"></div>
+      <div class="modal-dialog" style="max-width: 860px; width: 95%;">
+        <div class="modal-header">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="font-size: 1.3rem;">🎭</span>
+            <h3>Persona & System Prompts Configuration</h3>
+          </div>
+          <button class="btn-close" onclick="closePrompts()">&times;</button>
+        </div>
+        <div class="modal-body">
+          <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0;">
+            Controls what AI assistants (Claude.ai over MCP, Telegram bot, Web clients) receive during initialization and execution.
+          </p>
+
+          <div class="prompts-tabs" style="display: flex; gap: 8px; margin-bottom: 14px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 8px;">
+            <button type="button" class="btn btn-xs btn-filter active" id="tab-btn-soul" onclick="switchPromptTab('soul')">SOUL.md (Persona & Tone)</button>
+            <button type="button" class="btn btn-xs btn-filter" id="tab-btn-system" onclick="switchPromptTab('system')">SYSTEM_PROMPT.md (Rules & Silos)</button>
+            <button type="button" class="btn btn-xs btn-filter" id="tab-btn-preview" onclick="switchPromptTab('preview')">Live Synthesized Instructions</button>
+            <button type="button" class="btn btn-xs btn-filter" id="tab-btn-templates" onclick="switchPromptTab('templates')">MCP Prompt Templates</button>
+          </div>
+
+          <form id="prompts-form" onsubmit="event.preventDefault(); savePrompts();">
+            <!-- Tab 1: SOUL.md -->
+            <div id="tab-content-soul" class="prompt-tab-panel">
+              <label style="display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 6px;">
+                Assistant Persona, Tone, Style & Anti-Sycophancy (SOUL.md)
+              </label>
+              <textarea id="prompt-soul-editor" class="input-text" style="width: 100%; height: 260px; font-family: monospace; font-size: 0.85rem; line-height: 1.5; resize: vertical;"></textarea>
+            </div>
+
+            <!-- Tab 2: SYSTEM_PROMPT.md -->
+            <div id="tab-content-system" class="prompt-tab-panel" style="display: none;">
+              <label style="display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 6px;">
+                Knowledgebase Retrieval Guidelines & Silo Rules (SYSTEM_PROMPT.md)
+              </label>
+              <textarea id="prompt-sys-editor" class="input-text" style="width: 100%; height: 260px; font-family: monospace; font-size: 0.85rem; line-height: 1.5; resize: vertical;"></textarea>
+            </div>
+
+            <!-- Tab 3: Synthesized Preview -->
+            <div id="tab-content-preview" class="prompt-tab-panel" style="display: none;">
+              <label style="display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 6px;">
+                Combined Instructions Injected into MCP initialize & Thin Clients
+              </label>
+              <pre id="prompt-preview-view" class="code-block" style="max-height: 280px; overflow-y: auto; font-size: 0.8rem;"></pre>
+            </div>
+
+            <!-- Tab 4: Prompt Templates -->
+            <div id="tab-content-templates" class="prompt-tab-panel" style="display: none;">
+              <label style="display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 6px;">
+                Available MCP Prompt Templates (prompts/list)
+              </label>
+              <div id="prompt-templates-list" style="display: flex; flex-direction: column; gap: 8px;"></div>
+            </div>
+
+            <div class="form-actions" style="margin-top: 16px;">
+              <button type="button" class="btn btn-secondary" onclick="closePrompts()">Cancel</button>
+              <button type="submit" class="btn btn-primary" id="btn-save-prompts">Save Persona & Prompts</button>
             </div>
           </form>
         </div>

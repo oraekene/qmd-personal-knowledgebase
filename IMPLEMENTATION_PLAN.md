@@ -104,21 +104,19 @@ Enable precise keyword and semantic querying scoped to individual corpus partiti
 
 ---
 
-### Feature 3: System Prompt & User Customization Engine (Thin-Client Support)
+### Feature 3: System Prompt & User Customization Engine (Thin-Client Support) — [COMPLETED & VERIFIED]
 
-Give thin clients (Claude.ai, ChatGPT, Telegram) full access to personal rules, personas, tone guidelines, and directory-specific constraints without needing an IDE.
+Give thin clients (Claude.ai, ChatGPT, Telegram, mobile) full access to personal rules, personas, tone guidelines, and directory-specific constraints without needing an IDE.
 
-#### [NEW] [SYSTEM_PROMPT.md](file:///c:/Users/rotim/Documents/QMD%20powered%20Personal%20Knowledgebase%20and%20Search%20Engine/SYSTEM_PROMPT.md)
-* Base system persona, citation rules, and response formatting guidelines.
-
-#### [NEW] [prompt_engine.py](file:///c:/Users/rotim/Documents/QMD%20powered%20Personal%20Knowledgebase%20and%20Search%20Engine/auth_proxy/prompt_engine.py)
-* Dynamic system prompt synthesizer:
-  - Combines `SOUL.md` (Persona), `SYSTEM_PROMPT.md` (Operational Guidelines), and active silo `AGENTS.md`.
-  - Injects dynamic prompt into MCP `initialize` instructions.
-  - Implements MCP Prompts specification (`prompts/list` and `prompts/get`) exposing templates: `knowledge-search`, `wiki-synthesis`, `deep-investigation`.
-
-#### [MODIFY] [index.html](file:///c:/Users/rotim/Documents/QMD%20powered%20Personal%20Knowledgebase%20and%20Search%20Engine/control_plane/static/index.html)
-* Add a **"Persona & System Prompts"** tab in the Control Plane to edit instructions, adjust tone, and save changes without touching files.
+* **Status**: Completed & Verified (Live MCP `initialize` injection, `prompts/list`, `prompts/get`, and Control Plane API verified; 106/106 tests green).
+* **Changes**:
+  - `SOUL.md`: Persona definition, direct tone principles, anti-sycophancy, and conciseness rules.
+  - `SYSTEM_PROMPT.md`: 7-silo corpus architecture, retrieval protocol, citation conventions, and truth grounding.
+  - `auth_proxy/prompt_engine.py`: Synthesizes `SOUL.md` + `SYSTEM_PROMPT.md` + `AGENTS.md` + dynamic silo stats; implements MCP prompt templates (`knowledge-search`, `wiki-synthesis`, `deep-investigation`).
+  - `auth_proxy/server.py`: Intercepts MCP `initialize` to inject synthesized system instructions (5.2KB) and advertise `prompts` capability; handles `prompts/list` and `prompts/get` natively.
+  - `control_plane/server.py`: Added `GET /api/prompts` and `POST /api/prompts` endpoints for live inspection and saving of prompts.
+  - `control_plane/static/index.html` & `app.js`: Added "Persona & Prompts" modal with live tabs for `SOUL.md`, `SYSTEM_PROMPT.md`, live synthesized instructions preview, and MCP prompt templates list.
+  - `tests/test_prompt_engine.py`: Added automated test suite for prompt loaders, synthesis, and MCP template generators.
 
 ---
 

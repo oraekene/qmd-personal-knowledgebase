@@ -237,6 +237,31 @@ def test_control_plane_http_server(tmp_path: Path):
                 assert "-c" in cmd
                 assert "wiki" in cmd
 
+        # 12. GET /api/prompts
+        with urllib.request.urlopen(f"{base_url}/api/prompts") as resp:
+            assert resp.status == 200
+            data = json.loads(resp.read().decode())
+            assert "soul" in data
+            assert "system_prompt" in data
+            assert "synthesized" in data
+            assert "templates" in data
+            assert any(t["name"] == "knowledge-search" for t in data["templates"])
+
+        # 13. POST /api/prompts
+        p_req = urllib.request.Request(
+            f"{base_url}/api/prompts",
+            data=json.dumps({"soul": "Updated Persona", "system_prompt": "Updated System Guidelines"}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(p_req) as resp:
+            assert resp.status == 200
+            data = json.loads(resp.read().decode())
+            assert data["status"] == "saved"
+
+        assert (tmp_path / "SOUL.md").read_text(encoding="utf-8").strip() == "Updated Persona"
+        assert (tmp_path / "SYSTEM_PROMPT.md").read_text(encoding="utf-8").strip() == "Updated System Guidelines"
+
     finally:
         server.shutdown()
         server.server_close()

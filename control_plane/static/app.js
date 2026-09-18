@@ -13,6 +13,7 @@ document.addEventListener("DOMContentLoaded", () => {
   pollLogs();
   setInterval(pollLogs, 1500);
 
+  document.getElementById("btn-open-prompts").addEventListener("click", openPrompts);
   document.getElementById("btn-open-settings").addEventListener("click", openSettings);
   document.getElementById("btn-start-all-daemons").addEventListener("click", () => controlDaemon("all", "restart"));
 });
@@ -504,3 +505,95 @@ async function saveSettings() {
     btn.innerText = "Save Configurations";
   }
 }
+
+// Persona & Prompts Management
+async function openPrompts() {
+  try {
+    const res = await fetch("/api/prompts");
+    const data = await res.json();
+    if (!res.ok) {
+      showToast(data.error || "Failed to load prompts", true);
+      return;
+    }
+
+    document.getElementById("prompt-soul-editor").value = data.soul || "";
+    document.getElementById("prompt-sys-editor").value = data.system_prompt || "";
+    document.getElementById("prompt-preview-view").textContent = data.synthesized || "";
+
+    const tplList = document.getElementById("prompt-templates-list");
+    tplList.innerHTML = "";
+    (data.templates || []).forEach(tpl => {
+      const card = document.createElement("div");
+      card.className = "card";
+      card.style.padding = "10px 14px";
+      card.style.background = "rgba(255,255,255,0.03)";
+      card.style.border = "1px solid rgba(255,255,255,0.08)";
+      card.style.borderRadius = "6px";
+      card.innerHTML = `
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <strong style="color:var(--accent); font-family:monospace; font-size:0.95rem;">${escapeHtml(tpl.name)}</strong>
+          <span class="badge badge-gray" style="font-size:10px;">MCP Prompt</span>
+        </div>
+        <p style="margin:4px 0 6px 0; font-size:0.82rem; color:var(--text);">${escapeHtml(tpl.description)}</p>
+        <div style="font-size:0.75rem; color:var(--text-muted); font-family:monospace;">
+          Arguments: ${(tpl.arguments || []).map(a => `<span style="background:rgba(255,255,255,0.08); padding:2px 6px; border-radius:4px; margin-right:4px;">${escapeHtml(a.name)}${a.required ? '*' : ''}</span>`).join(" ")}
+        </div>
+      `;
+      tplList.appendChild(card);
+    });
+
+    switchPromptTab("soul");
+    document.getElementById("prompts-modal").style.display = "flex";
+  } catch (e) {
+    showToast(`Error loading prompts: ${e}`, true);
+  }
+}
+
+function closePrompts() {
+  document.getElementById("prompts-modal").style.display = "none";
+}
+
+function switchPromptTab(tabName) {
+  const tabs = ["soul", "system", "preview", "templates"];
+  tabs.forEach(t => {
+    const btn = document.getElementById(`tab-btn-${t}`);
+    const panel = document.getElementById(`tab-content-${t}`);
+    if (btn) {
+      if (t === tabName) btn.classList.add("active");
+      else btn.classList.remove("active");
+    }
+    if (panel) {
+      panel.style.display = (t === tabName) ? "block" : "none";
+    }
+  });
+}
+
+async function savePrompts() {
+  const btn = document.getElementById("btn-save-prompts");
+  btn.disabled = true;
+  btn.innerText = "Saving...";
+
+  const soul = document.getElementById("prompt-soul-editor").value;
+  const system_prompt = document.getElementById("prompt-sys-editor").value;
+
+  try {
+    const res = await fetch("/api/prompts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ soul, system_prompt })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      showToast("Persona & Prompts updated successfully!");
+      closePrompts();
+    } else {
+      showToast(data.error || "Failed to save prompts", true);
+    }
+  } catch (e) {
+    showToast(`Error: ${e}`, true);
+  } finally {
+    btn.disabled = false;
+    btn.innerText = "Save Persona & Prompts";
+  }
+}
+

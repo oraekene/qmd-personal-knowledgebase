@@ -35,6 +35,8 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger("control_plane")
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 ENV_PATH = REPO_ROOT / ".env"
 
@@ -610,6 +612,24 @@ def make_control_plane_handler(repo_root: Path, static_dir: Path, logger: Option
                 self.send_json(200, {"config": env_dict})
                 return
 
+            if path == "/api/prompts":
+                from auth_proxy.prompt_engine import (
+                    list_prompts,
+                    load_soul,
+                    load_system_prompt,
+                    synthesize_system_prompt,
+                )
+                soul_text = load_soul(repo_root)
+                sys_prompt_text = load_system_prompt(repo_root)
+                synthesized = synthesize_system_prompt(repo_root)
+                self.send_json(200, {
+                    "soul": soul_text,
+                    "system_prompt": sys_prompt_text,
+                    "synthesized": synthesized,
+                    "templates": list_prompts(),
+                })
+                return
+
             if path == "/api/logs":
                 since = int(params.get("since", [0])[0])
                 source = params.get("source", ["ALL"])[0]
@@ -703,6 +723,24 @@ def make_control_plane_handler(repo_root: Path, static_dir: Path, logger: Option
 
                 write_env_dict(repo_root / ".env", updates)
                 self.send_json(200, {"status": "saved", "count": len(updates)})
+                return
+
+            if path == "/api/prompts":
+                try:
+                    payload = json.loads(body.decode("utf-8")) if body else {}
+                except Exception:
+                    self.send_json(400, {"error": "Invalid JSON"})
+                    return
+
+                soul_text = payload.get("soul")
+                sys_prompt_text = payload.get("system_prompt")
+
+                if soul_text is not None:
+                    (repo_root / "SOUL.md").write_text(soul_text.strip() + "\n", encoding="utf-8")
+                if sys_prompt_text is not None:
+                    (repo_root / "SYSTEM_PROMPT.md").write_text(sys_prompt_text.strip() + "\n", encoding="utf-8")
+
+                self.send_json(200, {"status": "saved", "message": "Prompts updated successfully"})
                 return
 
             if path == "/api/run":

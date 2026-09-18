@@ -327,3 +327,102 @@ def test_allowed_origins_parses_env(monkeypatch) -> None:  # type: ignore[no-unt
     assert _allowed_origins() == ("*",)
     monkeypatch.setenv("QMD_ALLOWED_ORIGINS", "")
     assert _allowed_origins() == ("*",)
+
+
+def test_auth_proxy_mcp_prompts_list_and_get() -> None:
+    """Auth Proxy handles MCP prompts/list and prompts/get directly without forwarding."""
+    import io
+    import json
+    handler_cls = make_handler("valid_tok", "http://127.0.0.1:8181")
+
+    # 1. prompts/list
+    class FakeReqList:
+        def __init__(self):
+            self.command = "POST"
+            self.path = "/mcp"
+            self.headers = {
+                "Authorization": "Bearer valid_tok",
+                "Content-Length": "50",
+            }
+            body = json.dumps({"jsonrpc": "2.0", "id": 101, "method": "prompts/list"}).encode()
+            self.rfile = io.BytesIO(body)
+            self.headers["Content-Length"] = str(len(body))
+            self.wfile = io.BytesIO()
+            self._code = 0
+            self._headers = {}
+
+        def send_response(self, code, message=None):
+            self._code = code
+
+        def send_header(self, k, v):
+            self._headers[k] = v
+
+        def end_headers(self):
+            pass
+
+    fake_list = FakeReqList()
+    h1 = handler_cls.__new__(handler_cls)
+    h1.command = fake_list.command
+    h1.path = fake_list.path
+    h1.headers = fake_list.headers
+    h1.rfile = fake_list.rfile
+    h1.wfile = fake_list.wfile
+    h1.send_response = fake_list.send_response
+    h1.send_header = fake_list.send_header
+    h1.end_headers = fake_list.end_headers
+    h1.client_address = ("127.0.0.1", 12345)
+    h1.log_date_time_string = lambda: "now"
+
+    handler_cls._proxy_request(h1)
+    assert fake_list._code == 200
+    res_list = json.loads(fake_list.wfile.getvalue().decode())
+    assert res_list["id"] == 101
+    assert "prompts" in res_list["result"]
+    assert any(p["name"] == "knowledge-search" for p in res_list["result"]["prompts"])
+
+    # 2. prompts/get
+    class FakeReqGet:
+        def __init__(self):
+            self.command = "POST"
+            self.path = "/mcp"
+            self.headers = {"Authorization": "Bearer valid_tok"}
+            body = json.dumps({
+                "jsonrpc": "2.0",
+                "id": 102,
+                "method": "prompts/get",
+                "params": {"name": "knowledge-search", "arguments": {"query": "OCR rationale"}}
+            }).encode()
+            self.rfile = io.BytesIO(body)
+            self.headers["Content-Length"] = str(len(body))
+            self.wfile = io.BytesIO()
+            self._code = 0
+            self._headers = {}
+
+        def send_response(self, code, message=None):
+            self._code = code
+
+        def send_header(self, k, v):
+            self._headers[k] = v
+
+        def end_headers(self):
+            pass
+
+    fake_get = FakeReqGet()
+    h2 = handler_cls.__new__(handler_cls)
+    h2.command = fake_get.command
+    h2.path = fake_get.path
+    h2.headers = fake_get.headers
+    h2.rfile = fake_get.rfile
+    h2.wfile = fake_get.wfile
+    h2.send_response = fake_get.send_response
+    h2.send_header = fake_get.send_header
+    h2.end_headers = fake_get.end_headers
+    h2.client_address = ("127.0.0.1", 12345)
+    h2.log_date_time_string = lambda: "now"
+
+    handler_cls._proxy_request(h2)
+    assert fake_get._code == 200
+    res_get = json.loads(fake_get.wfile.getvalue().decode())
+    assert res_get["id"] == 102
+    assert "messages" in res_get["result"]
+
