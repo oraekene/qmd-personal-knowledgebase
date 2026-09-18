@@ -18,6 +18,7 @@
         </div>
       </div>
       <div class="header-actions">
+        <a href="#section-automations" class="btn btn-secondary" style="text-decoration: none; display: inline-flex; align-items: center;">⚡ Automations</a>
         <button id="btn-open-prompts" class="btn btn-secondary">🎭 Persona & Prompts</button>
         <button id="btn-open-settings" class="btn btn-secondary">⚙️ Settings & Secrets</button>
         <button id="btn-start-all-daemons" class="btn btn-primary">⚡ Start All Daemons</button>
@@ -326,6 +327,92 @@
           <div id="search-results-box" class="search-results-box" style="display:none;">
             <h4>Search Output:</h4>
             <pre id="search-raw-output" class="code-block"></pre>
+          </div>
+        </div>
+      </section>
+
+      <!-- Section 6: Automations, Crons & Background Sandboxes -->
+      <section class="section" id="section-automations">
+        <div class="section-header">
+          <div>
+            <h2>⚡ Automations, Crons & Sandboxes</h2>
+            <span class="subtitle-hint">Scheduled syncs and long-running autonomous pipelines executing locally or in off-PC cloud microVMs</span>
+          </div>
+        </div>
+
+        <!-- Schedule Builder Card -->
+        <div class="card" style="padding: 18px; margin-bottom: 16px;">
+          <h3 style="margin-top: 0; margin-bottom: 12px; font-size: 1rem;">➕ Schedule New Automation</h3>
+          <form id="automation-form" onsubmit="event.preventDefault(); createAutomation();">
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 12px;">
+              <div>
+                <label style="display: block; font-size: 0.8rem; font-weight: 600; margin-bottom: 4px; color: var(--text-muted);">Pipeline Action</label>
+                <select id="auto-action" class="input-text" style="width: 100%; background: var(--bg-card); color: var(--text);" onchange="onAutoActionChange()">
+                  <option value="ingest_inbox">📥 Ingest Inbox (Chats, Notes, PDFs)</option>
+                  <option value="github_sync">🐙 GitHub Tracking Repos Sync</option>
+                  <option value="reindex">🔍 Re-index Vector & BM25 Store</option>
+                  <option value="deploy_mirror">🌐 Deploy Cloudflare Static Mirror</option>
+                  <option value="compile_wiki">🧠 Workers AI Wiki Hub Synthesis</option>
+                  <option value="reach_ingest">⚡ Agent-Reach URL Ingestion</option>
+                </select>
+              </div>
+
+              <div>
+                <label style="display: block; font-size: 0.8rem; font-weight: 600; margin-bottom: 4px; color: var(--text-muted);">Schedule Frequency</label>
+                <select id="auto-schedule" class="input-text" style="width: 100%; background: var(--bg-card); color: var(--text);" onchange="onAutoScheduleChange()">
+                  <option value="@every 15m">Every 15 minutes (@every 15m)</option>
+                  <option value="@every 30m" selected>Every 30 minutes (@every 30m)</option>
+                  <option value="@hourly">Hourly (@hourly)</option>
+                  <option value="0 2 * * *">Daily at 02:00 UTC (0 2 * * *)</option>
+                  <option value="@weekly">Weekly on Sunday (@weekly)</option>
+                  <option value="custom">⚙️ Custom Cron Expression...</option>
+                </select>
+              </div>
+
+              <div>
+                <label style="display: block; font-size: 0.8rem; font-weight: 600; margin-bottom: 4px; color: var(--text-muted);">Execution Environment</label>
+                <select id="auto-tier" class="input-text" style="width: 100%; background: var(--bg-card); color: var(--text);">
+                  <option value="local">💻 Local Subprocess Daemon</option>
+                  <option value="cloud">☁️ Cloud Sandbox (Off-PC E2B / Modal)</option>
+                </select>
+              </div>
+            </div>
+
+            <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px;">
+              <input type="text" id="auto-name" placeholder="Job Name (e.g. Daily Knowledge Sync)" class="input-text" style="flex: 2; min-width: 200px;" value="Automatic Inbox Ingestion" required>
+              <input type="text" id="auto-custom-cron" placeholder="Cron expression (e.g. */10 * * * *)" class="input-text" style="flex: 1; min-width: 160px; display: none; font-family: monospace;">
+              <input type="url" id="auto-reach-url" placeholder="URL to ingest (for Agent-Reach action)" class="input-text" style="flex: 2; min-width: 200px; display: none;">
+              <button type="submit" class="btn btn-primary" id="btn-save-automation">➕ Add Schedule</button>
+            </div>
+            <span class="meta-desc" style="font-size: 0.78rem; color: var(--text-muted);">
+              Cloud Sandboxes run asynchronously in E2B/Modal microVMs even when your PC is turned off, then sync results back to <code>corpus/</code>.
+            </span>
+          </form>
+        </div>
+
+        <!-- Active Automations Table Card -->
+        <div class="card" style="padding: 18px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+            <h3 style="margin: 0; font-size: 1rem;">Active Schedules (<span id="auto-count">0</span>)</h3>
+            <button class="btn btn-xs btn-outline" onclick="fetchAutomations()">🔄 Refresh</button>
+          </div>
+          <div style="overflow-x: auto;">
+            <table style="width: 100%; border-collapse: collapse; font-size: 0.88rem; text-align: left;">
+              <thead>
+                <tr style="border-bottom: 1px solid var(--border); color: var(--text-muted);">
+                  <th style="padding: 8px 6px;">Name & Action</th>
+                  <th style="padding: 8px 6px;">Schedule</th>
+                  <th style="padding: 8px 6px;">Tier</th>
+                  <th style="padding: 8px 6px;">Last Run</th>
+                  <th style="padding: 8px 6px;">Next Run</th>
+                  <th style="padding: 8px 6px;">Status</th>
+                  <th style="padding: 8px 6px; text-align: right;">Actions</th>
+                </tr>
+              </thead>
+              <tbody id="automations-table-body">
+                <tr><td colspan="7" style="padding: 16px; text-align: center; color: var(--text-muted);">Loading automations...</td></tr>
+              </tbody>
+            </table>
           </div>
         </div>
       </section>

@@ -540,10 +540,23 @@ class DaemonSupervisor:
 
 
 
-def make_control_plane_handler(repo_root: Path, static_dir: Path, logger: Optional[SystemLogger] = None):
+def make_control_plane_handler(
+    repo_root: Path,
+    static_dir: Path,
+    logger: Optional[SystemLogger] = None,
+    scheduler: Optional[Any] = None,
+):
     system_logger = logger or SystemLogger(repo_root)
     runner = TaskRunner(repo_root, logger=system_logger)
     supervisor = DaemonSupervisor(repo_root, logger=system_logger)
+
+    from control_plane.scheduler import SchedulerDaemon, SchedulerStore
+    scheduler_store = SchedulerStore(repo_root / "automations.json")
+    scheduler_daemon = scheduler or SchedulerDaemon(
+        repo_root=repo_root,
+        store=scheduler_store,
+        logger_func=lambda level, msg: system_logger.log("SCHEDULER", msg, level=level),
+    )
 
     class Handler(SimpleHTTPRequestHandler):
         def __init__(self, *args, **kwargs):
@@ -564,7 +577,7 @@ def make_control_plane_handler(repo_root: Path, static_dir: Path, logger: Option
         def do_OPTIONS(self) -> None:
             self.send_response(HTTPStatus.NO_CONTENT)
             self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
             self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Filename")
             self.end_headers()
 
@@ -733,6 +746,30 @@ def make_control_plane_handler(repo_root: Path, static_dir: Path, logger: Option
                 self.send_json(200, {
                     "catalog": list(TOOL_REGISTRY.values()),
                     "progressive_manifest": get_progressive_tools_manifest(),
+                })
+                return
+
+            if path == "/api/automations":
+                jobs = scheduler_store.load_jobs()
+                self.send_json(200, {"automations": [j.to_dict() for j in jobs], "count": len(jobs)})
+                return
+
+            if path.startswith("/api/automations/"):
+                job_id = path[len("/api/automations/"):].strip()
+                job = scheduler_store.get_job(job_id)
+                if job:
+                    self.send_json(200, job.to_dict())
+                else:
+                    self.send_json(404, {"error": f"Automation '{job_id}' not found"})
+                return
+
+            if path == "/api/sandboxes":
+                from control_plane.sandbox import CloudSandbox
+                cs = CloudSandbox(repo_root=repo_root)
+                configured, provider = cs.is_configured()
+                self.send_json(200, {
+                    "local": {"available": True, "type": "subprocess"},
+                    "cloud": {"configured": configured, "provider": provider},
                 })
                 return
 
@@ -993,13 +1030,123 @@ def make_control_plane_handler(repo_root: Path, static_dir: Path, logger: Option
                 })
                 return
 
+            if path == "/api/automations":
+                try:
+                    payload = json.loads(body.decode("utf-8")) if body else {}
+                except Exception:
+                    self.send_json(400, {"error": "Invalid JSON"})
+                    return
+                from control_plane.scheduler import AutomationJob, compute_next_run
+                job = AutomationJob.from_dict(payload)
+                if not job.next_run_at and job.enabled:
+                    job.next_run_at = compute_next_run(job.schedule).isoformat()
+                scheduler_store.upsert_job(job)
+                system_logger.log("SCHEDULER", f"Saved automation '{job.name}' ({job.id})")
+                self.send_json(200, {"status": "saved", "job": job.to_dict()})
+                return
+
+            if path.startswith("/api/automations/") and path.endswith("/trigger"):
+                job_id = path[len("/api/automations/"): -len("/trigger")].strip()
+                try:
+                    res = scheduler_daemon.trigger_job(job_id)
+                    self.send_json(200, {"status": "triggered", "result": res.to_dict()})
+                except Exception as e:
+                    self.send_json(500, {"error": f"Trigger failed: {e}"})
+                return
+
+            if path.startswith("/api/automations/") and path.endswith("/toggle"):
+                job_id = path[len("/api/automations/"): -len("/toggle")].strip()
+                job = scheduler_store.get_job(job_id)
+                if not job:
+                    self.send_json(404, {"error": f"Automation '{job_id}' not found"})
+                    return
+                job.enabled = not job.enabled
+                from control_plane.scheduler import compute_next_run
+                if job.enabled and not job.next_run_at:
+                    job.next_run_at = compute_next_run(job.schedule).isoformat()
+                scheduler_store.upsert_job(job)
+                system_logger.log("SCHEDULER", f"Toggled automation '{job.name}' ({job.id}) enabled={job.enabled}")
+                self.send_json(200, {"status": "updated", "job": job.to_dict()})
+                return
+
+            if path.startswith("/api/automations/") and path.endswith("/delete"):
+                job_id = path[len("/api/automations/"): -len("/delete")].strip()
+                deleted = scheduler_store.delete_job(job_id)
+                if deleted:
+                    system_logger.log("SCHEDULER", f"Deleted automation '{job_id}'")
+                    self.send_json(200, {"status": "deleted", "id": job_id})
+                else:
+                    self.send_json(404, {"error": f"Automation '{job_id}' not found"})
+                return
+
+            if path == "/api/sandboxes/execute":
+                try:
+                    payload = json.loads(body.decode("utf-8")) if body else {}
+                except Exception:
+                    self.send_json(400, {"error": "Invalid JSON"})
+                    return
+                action = payload.get("action", "")
+                params_dict = payload.get("params", {})
+                tier = payload.get("tier", "local")
+                timeout = int(payload.get("timeout", 300))
+                from control_plane.sandbox import execute_action
+                res = execute_action(action=action, params=params_dict, tier=tier, timeout=timeout, repo_root=repo_root)
+                self.send_json(200, res.to_dict())
+                return
+
+            self.send_json(404, {"error": "Endpoint not found"})
+
+        def do_PUT(self) -> None:
+            parsed = urllib.parse.urlparse(self.path)
+            path = parsed.path.rstrip("/")
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length) if length else b""
+
+            if path.startswith("/api/automations/"):
+                job_id = path[len("/api/automations/"):].strip()
+                try:
+                    payload = json.loads(body.decode("utf-8")) if body else {}
+                except Exception:
+                    self.send_json(400, {"error": "Invalid JSON"})
+                    return
+                existing = scheduler_store.get_job(job_id)
+                if not existing:
+                    self.send_json(404, {"error": f"Automation '{job_id}' not found"})
+                    return
+                for k, v in payload.items():
+                    if hasattr(existing, k):
+                        setattr(existing, k, v)
+                scheduler_store.upsert_job(existing)
+                system_logger.log("SCHEDULER", f"Updated automation '{existing.name}' ({existing.id})")
+                self.send_json(200, {"status": "saved", "job": existing.to_dict()})
+                return
+
+            self.send_json(404, {"error": "Endpoint not found"})
+
+        def do_DELETE(self) -> None:
+            parsed = urllib.parse.urlparse(self.path)
+            path = parsed.path.rstrip("/")
+            if path.startswith("/api/automations/"):
+                job_id = path[len("/api/automations/"):].strip()
+                deleted = scheduler_store.delete_job(job_id)
+                if deleted:
+                    system_logger.log("SCHEDULER", f"Deleted automation '{job_id}'")
+                    self.send_json(200, {"status": "deleted", "id": job_id})
+                else:
+                    self.send_json(404, {"error": f"Automation '{job_id}' not found"})
+                return
             self.send_json(404, {"error": "Endpoint not found"})
 
     return Handler
 
 
 def run_server(port: int = 3333, host: str = "127.0.0.1") -> None:
-    handler_class = make_control_plane_handler(REPO_ROOT, STATIC_DIR)
+    from control_plane.scheduler import SchedulerDaemon, SchedulerStore
+    store = SchedulerStore(REPO_ROOT / "automations.json")
+    scheduler = SchedulerDaemon(repo_root=REPO_ROOT, store=store)
+    scheduler.start()
+
+    handler_class = make_control_plane_handler(REPO_ROOT, STATIC_DIR, scheduler=scheduler)
     server = ThreadingHTTPServer((host, port), handler_class)
     print("================================================================")
     print(f"  QMD Knowledgebase Control Plane running at http://{host}:{port}")
@@ -1009,6 +1156,7 @@ def run_server(port: int = 3333, host: str = "127.0.0.1") -> None:
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nShutting down Control Plane...")
+        scheduler.stop()
         server.server_close()
 
 

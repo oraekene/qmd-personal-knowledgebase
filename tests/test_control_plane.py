@@ -344,6 +344,86 @@ def test_control_plane_http_server(tmp_path: Path):
             assert any(t["name"] == "search" for t in t_data["catalog"])
             assert any(t["name"] == "skills_list" for t in t_data["progressive_manifest"])
 
+        # 20. GET /api/automations & /api/sandboxes
+        with urllib.request.urlopen(f"{base_url}/api/automations") as resp:
+            assert resp.status == 200
+            auto_data = json.loads(resp.read().decode())
+            assert "automations" in auto_data
+            assert len(auto_data["automations"]) >= 5
+
+        with urllib.request.urlopen(f"{base_url}/api/sandboxes") as resp:
+            assert resp.status == 200
+            sb_data = json.loads(resp.read().decode())
+            assert "local" in sb_data
+            assert "cloud" in sb_data
+            assert sb_data["local"]["available"] is True
+
+        # 21. POST /api/automations (Create new job)
+        new_job_payload = {
+            "id": "test_api_job",
+            "name": "Test API Automation",
+            "action": "custom_command",
+            "schedule": "@every 20m",
+            "params": {"command": "python -c \"print('api job run')\""},
+            "tier": "local",
+            "enabled": True,
+        }
+        create_auto_req = urllib.request.Request(
+            f"{base_url}/api/automations",
+            data=json.dumps(new_job_payload).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(create_auto_req) as resp:
+            assert resp.status == 200
+            res = json.loads(resp.read().decode())
+            assert res["status"] == "saved"
+            assert res["job"]["id"] == "test_api_job"
+
+        # 22. POST /api/automations/{id}/toggle & trigger
+        toggle_req = urllib.request.Request(
+            f"{base_url}/api/automations/test_api_job/toggle",
+            data=b"",
+            method="POST",
+        )
+        with urllib.request.urlopen(toggle_req) as resp:
+            assert resp.status == 200
+            res = json.loads(resp.read().decode())
+            assert res["job"]["enabled"] is False
+
+        trig_req = urllib.request.Request(
+            f"{base_url}/api/automations/test_api_job/trigger",
+            data=b"",
+            method="POST",
+        )
+        with urllib.request.urlopen(trig_req) as resp:
+            assert resp.status == 200
+            res = json.loads(resp.read().decode())
+            assert res["status"] == "triggered"
+            assert res["result"]["success"] is True
+
+        # 23. POST /api/sandboxes/execute & DELETE /api/automations/{id}
+        exec_req = urllib.request.Request(
+            f"{base_url}/api/sandboxes/execute",
+            data=json.dumps({"action": "custom_command", "params": {"command": "python -c \"print('sandbox api ok')\""}}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(exec_req) as resp:
+            assert resp.status == 200
+            res = json.loads(resp.read().decode())
+            assert res["success"] is True
+            assert "sandbox api ok" in res["stdout"]
+
+        del_req = urllib.request.Request(
+            f"{base_url}/api/automations/test_api_job",
+            method="DELETE",
+        )
+        with urllib.request.urlopen(del_req) as resp:
+            assert resp.status == 200
+            res = json.loads(resp.read().decode())
+            assert res["status"] == "deleted"
+
     finally:
         server.shutdown()
         server.server_close()

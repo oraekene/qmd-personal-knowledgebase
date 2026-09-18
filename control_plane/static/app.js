@@ -9,6 +9,10 @@ document.addEventListener("DOMContentLoaded", () => {
   setInterval(fetchStatus, 3000);
   setupDropzone();
 
+  // Load and refresh automations & scheduled tasks
+  fetchAutomations();
+  setInterval(fetchAutomations, 5000);
+
   // Start continuous real-time logging across all daemons and pipelines
   pollLogs();
   setInterval(pollLogs, 1500);
@@ -700,6 +704,210 @@ async function ingestReachUrl() {
   } finally {
     btn.disabled = false;
     btn.innerText = "⚡ Ingest URL";
+  }
+}
+
+// ----------------------------------------------------------------------
+// Automations & Crons (Feature 6)
+// ----------------------------------------------------------------------
+
+function onAutoActionChange() {
+  const action = document.getElementById("auto-action").value;
+  const nameInput = document.getElementById("auto-name");
+  const reachUrl = document.getElementById("auto-reach-url");
+
+  const actionNames = {
+    "ingest_inbox": "Automatic Inbox Ingestion",
+    "github_sync": "GitHub Repositories Tracking Sync",
+    "reindex": "Vector & BM25 Store Reindex",
+    "deploy_mirror": "Cloudflare Pages Mirror Deployment",
+    "compile_wiki": "Workers AI Wiki Hub Synthesis",
+    "reach_ingest": "Agent-Reach Scheduled URL Ingest"
+  };
+  if (nameInput) {
+    nameInput.value = actionNames[action] || "Custom Task";
+  }
+  if (reachUrl) {
+    reachUrl.style.display = (action === "reach_ingest") ? "block" : "none";
+  }
+}
+
+function onAutoScheduleChange() {
+  const sched = document.getElementById("auto-schedule").value;
+  const customInput = document.getElementById("auto-custom-cron");
+  if (customInput) {
+    customInput.style.display = (sched === "custom") ? "block" : "none";
+  }
+}
+
+async function fetchAutomations() {
+  try {
+    const res = await fetch("/api/automations");
+    if (!res.ok) return;
+    const data = await res.json();
+    renderAutomations(data.automations || []);
+  } catch (err) {
+    console.warn("Failed to fetch automations:", err);
+  }
+}
+
+function renderAutomations(list) {
+  const countEl = document.getElementById("auto-count");
+  if (countEl) countEl.innerText = list.length;
+
+  const tbody = document.getElementById("automations-table-body");
+  if (!tbody) return;
+
+  if (list.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="7" style="padding: 16px; text-align: center; color: var(--text-muted);">No automations configured.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = "";
+  list.forEach(job => {
+    const tr = document.createElement("tr");
+    tr.style.borderBottom = "1px solid rgba(255,255,255,0.05)";
+
+    const statusBadge = getStatusBadge(job.last_status);
+    const tierBadge = job.tier === "cloud"
+      ? `<span class="badge badge-purple" style="font-size:10px;">☁️ Cloud</span>`
+      : `<span class="badge badge-gray" style="font-size:10px;">💻 Local</span>`;
+
+    const lastRunText = job.last_run_at ? new Date(job.last_run_at).toLocaleTimeString() : "Never";
+    const nextRunText = job.next_run_at ? new Date(job.next_run_at).toLocaleTimeString() : "-";
+
+    tr.innerHTML = `
+      <td style="padding: 10px 6px;">
+        <strong style="color: var(--text);">${escapeHtml(job.name)}</strong>
+        <div style="font-size: 0.78rem; color: var(--text-muted); font-family: monospace;">${escapeHtml(job.action)}</div>
+      </td>
+      <td style="padding: 10px 6px; font-family: monospace; font-size: 0.85rem; color: var(--accent-blue, #60a5fa);">
+        ${escapeHtml(job.schedule)}
+      </td>
+      <td style="padding: 10px 6px;">${tierBadge}</td>
+      <td style="padding: 10px 6px; font-size: 0.82rem; color: var(--text-muted);">${lastRunText}</td>
+      <td style="padding: 10px 6px; font-size: 0.82rem; color: var(--text); font-weight: 500;">${nextRunText}</td>
+      <td style="padding: 10px 6px;">${statusBadge}</td>
+      <td style="padding: 10px 6px; text-align: right;">
+        <div style="display: inline-flex; gap: 6px; align-items: center;">
+          <button class="btn btn-xs ${job.enabled ? 'btn-outline' : 'btn-secondary'}" onclick="toggleAutomation('${job.id}')" title="${job.enabled ? 'Pause automation' : 'Enable automation'}">
+            ${job.enabled ? '🟢 Active' : '⏸️ Paused'}
+          </button>
+          <button class="btn btn-xs btn-primary" onclick="triggerAutomation('${job.id}')" id="btn-trigger-${job.id}" title="Run now">
+            ⚡ Run
+          </button>
+          <button class="btn btn-xs btn-outline" style="color: var(--danger); border-color: rgba(239,68,68,0.3);" onclick="deleteAutomation('${job.id}')" title="Delete automation">
+            🗑️
+          </button>
+        </div>
+      </td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+function getStatusBadge(status) {
+  if (status === "success") {
+    return `<span class="badge badge-green" style="font-size:10px;">🟢 Success</span>`;
+  } else if (status === "running") {
+    return `<span class="badge badge-yellow" style="font-size:10px;">🟡 Running...</span>`;
+  } else if (status === "failed") {
+    return `<span class="badge badge-red" style="font-size:10px;">🔴 Failed</span>`;
+  }
+  return `<span class="badge badge-gray" style="font-size:10px;">⚪ Idle</span>`;
+}
+
+async function createAutomation() {
+  const action = document.getElementById("auto-action").value;
+  const schedSelect = document.getElementById("auto-schedule").value;
+  const customCron = document.getElementById("auto-custom-cron").value.trim();
+  const schedule = (schedSelect === "custom" && customCron) ? customCron : schedSelect;
+  const tier = document.getElementById("auto-tier").value;
+  const name = document.getElementById("auto-name").value.trim();
+  const reachUrl = document.getElementById("auto-reach-url").value.trim();
+
+  const params = {};
+  if (action === "reach_ingest" && reachUrl) {
+    params.url = reachUrl;
+  }
+
+  const btn = document.getElementById("btn-save-automation");
+  btn.disabled = true;
+  btn.innerText = "Adding...";
+
+  try {
+    const res = await fetch("/api/automations", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, action, schedule, tier, params, enabled: true })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      showToast(`Automation '${name}' added!`);
+      fetchAutomations();
+    } else {
+      showToast(data.error || "Failed to create automation", true);
+    }
+  } catch (err) {
+    showToast(`Error: ${err}`, true);
+  } finally {
+    btn.disabled = false;
+    btn.innerText = "➕ Add Schedule";
+  }
+}
+
+async function toggleAutomation(id) {
+  try {
+    const res = await fetch(`/api/automations/${id}/toggle`, { method: "POST" });
+    if (res.ok) {
+      fetchAutomations();
+    } else {
+      const data = await res.json();
+      showToast(data.error || "Toggle failed", true);
+    }
+  } catch (e) {
+    showToast(`Error: ${e}`, true);
+  }
+}
+
+async function triggerAutomation(id) {
+  const btn = document.getElementById(`btn-trigger-${id}`);
+  if (btn) {
+    btn.disabled = true;
+    btn.innerText = "⏳";
+  }
+  try {
+    const res = await fetch(`/api/automations/${id}/trigger`, { method: "POST" });
+    const data = await res.json();
+    if (res.ok) {
+      showToast(`Automation triggered: ${data.result.success ? 'Success' : 'Failed'}`);
+      fetchAutomations();
+    } else {
+      showToast(data.error || "Trigger failed", true);
+    }
+  } catch (e) {
+    showToast(`Error: ${e}`, true);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerText = "⚡ Run";
+    }
+  }
+}
+
+async function deleteAutomation(id) {
+  if (!confirm(`Delete automation schedule '${id}'?`)) return;
+  try {
+    const res = await fetch(`/api/automations/${id}`, { method: "DELETE" });
+    if (res.ok) {
+      showToast("Automation deleted");
+      fetchAutomations();
+    } else {
+      const data = await res.json();
+      showToast(data.error || "Delete failed", true);
+    }
+  } catch (e) {
+    showToast(`Error: ${e}`, true);
   }
 }
 

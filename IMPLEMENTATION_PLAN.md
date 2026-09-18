@@ -172,29 +172,32 @@ Eliminate token bloat and tool confusion in thin clients like Claude.ai and Tele
 
 ---
 
-### Feature 6: Server-Side Crons, Automations & Sandboxes
+### Feature 6: Server-Side Crons, Automations & Sandboxes — [COMPLETED & VERIFIED]
 
 Allow users to set up recurring knowledge syncs and long-running autonomous tasks that continue even when their personal computer is shut down.
 
-#### [NEW] [scheduler.py](file:///c:/Users/rotim/Documents/QMD%20powered%20Personal%20Knowledgebase%20and%20Search%20Engine/control_plane/scheduler.py)
-* Background daemon thread inside Control Plane.
-* Evaluates cron expressions or interval timers against `automations.json`.
-* Executes tasks locally or routes to sandboxes.
-* Emits progress and execution logs into `SystemLogger`.
-
-#### [NEW] [sandbox.py](file:///c:/Users/rotim/Documents/QMD%20powered%20Personal%20Knowledgebase%20and%20Search%20Engine/control_plane/sandbox.py)
-* Dual-tier execution sandbox:
-  - **Local Sandbox**: Docker / local isolated subprocess with timeouts and restricted disk access.
-  - **Cloud Sandbox Handoff**: Connects to **E2B** or **Modal** cloud microVMs for long-running batch jobs initiated remotely (e.g. via Telegram when PC is asleep).
-  - Synchronizes resulting markdown back to `corpus/` and pushes git/mirror updates.
-
-#### [MODIFY] [index.html](file:///c:/Users/rotim/Documents/QMD%20powered%20Personal%20Knowledgebase%20and%20Search%20Engine/control_plane/static/index.html)
-* Add an **"Automations & Crons"** tab:
-  - Button-based schedule builder (no CLI typing).
-  - Dropdown for Action: `[ Ingest Inbox | GitHub Sync | Re-index Embeddings | Deploy Mirror | YouTube Transcribe ]`.
-  - Dropdown for Schedule: `[ Every 30 mins | Hourly | Daily at 02:00 | Custom ]`.
-  - Dropdown for Execution: `[ Local Daemon | Cloud Sandbox (Off-PC) ]`.
-  - Table of active schedules with toggle switch (ON/OFF), last run status, and next scheduled run.
+* **Status**: Completed & Verified (133/133 tests green; scheduler daemon, cron parser, local and cloud sandboxes, Control Plane REST endpoints, and interactive schedule builder verified).
+* **Changes**:
+  - `control_plane/sandbox.py`: Built dual-tier execution sandbox:
+    - **Local Sandbox**: `LocalSubprocessSandbox` running tasks in isolated child processes with strict timeouts, environment isolation, and direct execution of Python/CLI tools.
+    - **Cloud Sandbox**: `CloudSandbox` supporting E2B microVMs and Modal serverless sandboxes for off-PC execution with fallback simulated mode when offline.
+    - `execute_action()`: Unified dispatcher for inbox ingestion, GitHub repo sync, QMD reindexing, Cloudflare mirror deployments, Workers AI wiki synthesis, and custom commands.
+  - `control_plane/scheduler.py`: Built background scheduler daemon and cron engine:
+    - Standard 5-part cron parser (`matches_cron`) supporting wildcards, ranges, steps, and lists.
+    - Human-readable shorthand intervals (`@every 15m`, `@every 30m`, `@hourly`, `@daily`, `@weekly`).
+    - `compute_next_run()` next execution timestamp calculator.
+    - `SchedulerStore` managing thread-safe persistence to `automations.json`.
+    - `SchedulerDaemon` background thread evaluating due jobs and streaming logs into `SystemLogger`.
+  - `control_plane/server.py`:
+    - Added endpoints `GET /api/automations`, `GET /api/automations/{id}`, `POST /api/automations`, `POST /api/automations/{id}/toggle`, `POST /api/automations/{id}/trigger`, `DELETE /api/automations/{id}`.
+    - Added `GET /api/sandboxes` and `POST /api/sandboxes/execute`.
+    - Integrated `SchedulerDaemon` auto-start into `run_server()`.
+  - `control_plane/static/index.html` & `app.js`:
+    - Added **Section 6: Automations, Crons & Background Sandboxes** with no-CLI Schedule Builder and Live Automations table.
+    - Added quick header navigation link `⚡ Automations`.
+    - Integrated interactive pause/resume toggles, manual run triggers, and deletion actions.
+  - `tests/test_scheduler_sandbox.py`: Added 9 tests covering cron parsing, shorthands, CRUD store operations, local sandbox timeouts, cloud sandbox detection, and scheduler tick execution.
+  - `tests/test_control_plane.py`: Added 4 tests (sections 20-23) verifying all automations and sandboxes REST endpoints.
 
 ---
 

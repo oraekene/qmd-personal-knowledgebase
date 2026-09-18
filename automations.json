@@ -1,0 +1,71 @@
+{
+  "automations": [
+    {
+      "id": "job_inbox_ingest",
+      "name": "Automatic Inbox Ingestion",
+      "action": "ingest_inbox",
+      "schedule": "@every 30m",
+      "params": {},
+      "tier": "local",
+      "enabled": true,
+      "last_run_at": null,
+      "last_status": "never",
+      "last_error": null,
+      "next_run_at": "2026-09-18T17:19:10.347288+00:00"
+    },
+    {
+      "id": "job_github_sync",
+      "name": "GitHub Repositories Tracking Sync",
+      "action": "github_sync",
+      "schedule": "0 2 * * *",
+      "params": {},
+      "tier": "local",
+      "enabled": true,
+      "last_run_at": null,
+      "last_status": "never",
+      "last_error": null,
+      "next_run_at": "2026-09-19T02:00:00+00:00"
+    },
+    {
+      "id": "job_reindex",
+      "name": "Vector & BM25 Index Maintenance",
+      "action": "reindex",
+      "schedule": "0 3 * * *",
+      "params": {},
+      "tier": "local",
+      "enabled": true,
+      "last_run_at": null,
+      "last_status": "never",
+      "last_error": null,
+      "next_run_at": "2026-09-19T03:00:00+00:00"
+    },
+    {
+      "id": "job_deploy_mirror",
+      "name": "Cloudflare Pages Mirror Deployment",
+      "action": "deploy_mirror",
+      "schedule": "0 4 * * *",
+      "params": {},
+      "tier": "local",
+      "enabled": true,
+      "last_run_at": null,
+      "last_status": "never",
+      "last_error": null,
+      "next_run_at": "2026-09-19T04:00:00+00:00"
+    },
+    {
+      "id": "job_compile_wiki",
+      "name": "Workers AI Wiki Synthesis",
+      "action": "compile_wiki",
+      "schedule": "@weekly",
+      "params": {
+        "max_items": 15
+      },
+      "tier": "local",
+      "enabled": false,
+      "last_run_at": null,
+      "last_status": "never",
+      "last_error": null,
+      "next_run_at": "2026-09-20T03:00:00+00:00"
+    }
+  ]
+}
