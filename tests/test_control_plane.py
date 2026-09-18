@@ -189,6 +189,54 @@ def test_control_plane_http_server(tmp_path: Path):
             assert resp.headers.get("Content-Type").startswith("text/plain")
             assert "attachment" in resp.headers.get("Content-Disposition")
 
+        # 8. GET /api/status contains retrieval_mode
+        with urllib.request.urlopen(f"{base_url}/api/status") as resp:
+            assert resp.status == 200
+            data = json.loads(resp.read().decode())
+            assert data["retrieval_mode"] == "cpu-only"
+
+        # 9. POST /api/engine/mode toggles retrieval_mode
+        mode_req = urllib.request.Request(
+            f"{base_url}/api/engine/mode",
+            data=json.dumps({"mode": "full"}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(mode_req) as resp:
+            assert resp.status == 200
+            data = json.loads(resp.read().decode())
+            assert data["retrieval_mode"] == "full"
+            assert "restarted" in data
+
+        env_after_mode = read_env_dict(env_file)
+        assert env_after_mode["RETRIEVAL_MODE"] == "full"
+
+        # 10. POST /api/engine/mode with invalid mode returns 400
+        bad_mode_req = urllib.request.Request(
+            f"{base_url}/api/engine/mode",
+            data=json.dumps({"mode": "quantum-superposition"}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            urllib.request.urlopen(bad_mode_req)
+            assert False, "Should have failed with 400"
+        except urllib.error.HTTPError as e:
+            assert e.code == 400
+
+        # 11. GET /api/search with silo parameter
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout="Mock search result", stderr="", returncode=0)
+            with urllib.request.urlopen(f"{base_url}/api/search?q=ocr+model&silo=wiki") as resp:
+                assert resp.status == 200
+                data = json.loads(resp.read().decode())
+                assert data["query"] == "ocr model"
+                assert data["silo"] == "wiki"
+                # verify subprocess called with -c wiki
+                cmd = mock_run.call_args[0][0]
+                assert "-c" in cmd
+                assert "wiki" in cmd
+
     finally:
         server.shutdown()
         server.server_close()

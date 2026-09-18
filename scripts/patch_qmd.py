@@ -39,8 +39,9 @@ def patch_store():
         old_str = "  const rows = db.prepare(sql).all(...params) as { filepath: string; display_path: string; title: string; body: string; hash: string; bm25_score: number; metadata_json: string | null }[];\n  return rows.map(row => {"
         new_str = """  let rows = db.prepare(sql).all(...params) as { filepath: string; display_path: string; title: string; body: string; hash: string; bm25_score: number; metadata_json: string | null }[];
 
-  // If AND search returned 0 results and query has multiple terms, fall back to OR ranking
-  if (rows.length === 0 && ftsQuery.includes(' AND ')) {
+  // If AND search returned 0 results and query has multiple terms, fall back to OR ranking (in cpu-only mode)
+  const isCpuOnly = (process.env.QMD_RETRIEVAL_MODE ?? process.env.RETRIEVAL_MODE ?? 'cpu-only').toLowerCase() === 'cpu-only';
+  if (isCpuOnly && rows.length === 0 && ftsQuery.includes(' AND ')) {
     const orQuery = buildFTS5Query(query, 'OR');
     if (orQuery) {
       const orParams = [orQuery, ...params.slice(1)];
@@ -52,18 +53,18 @@ def patch_store():
         content = content.replace(old_str, new_str)
         modified = True
 
-    # 3. hybridQuery skip expansion & vector embedding on skipRerank
+    # 3. hybridQuery skip expansion & vector embedding on skipRerank (in cpu-only mode)
     if "const expanded = hasStrongSignal\n    ? []\n    : await store.expandQuery(query);" in content:
         content = content.replace(
             "const expanded = hasStrongSignal\n    ? []\n    : await store.expandQuery(query);",
-            "const expanded = (hasStrongSignal || skipRerank)\n    ? []\n    : await store.expandQuery(query);"
+            "const isCpuOnly = (process.env.QMD_RETRIEVAL_MODE ?? process.env.RETRIEVAL_MODE ?? 'cpu-only').toLowerCase() === 'cpu-only';\n  const expanded = (hasStrongSignal || (skipRerank && isCpuOnly))\n    ? []\n    : await store.expandQuery(query);"
         )
         modified = True
 
     if "if (hasVectors) {\n    const vecQueries" in content:
         content = content.replace(
             "if (hasVectors) {\n    const vecQueries",
-            "if (hasVectors && !skipRerank) {\n    const vecQueries"
+            "if (hasVectors && !(skipRerank && isCpuOnly)) {\n    const vecQueries"
         )
         modified = True
 

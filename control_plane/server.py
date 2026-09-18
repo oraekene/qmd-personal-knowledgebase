@@ -54,7 +54,7 @@ def check_port_listening(host: str, port: int, timeout: float = 1.0) -> bool:
     return False
 
 
-def check_http_url(url: str, timeout: float = 5.0) -> bool:
+def check_http_url(url: str, timeout: float = 1.5) -> bool:
     """Check if an HTTP/HTTPS URL returns an OK status."""
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "Claude/1.0"})
@@ -418,6 +418,9 @@ class DaemonSupervisor:
             env_file_dict = read_env_dict(self.repo_root / ".env")
             env.update(env_file_dict)
             env["PYTHONUNBUFFERED"] = "1"
+            retrieval_mode = env.get("RETRIEVAL_MODE", "cpu-only").lower()
+            env["RETRIEVAL_MODE"] = retrieval_mode
+            env["QMD_RETRIEVAL_MODE"] = retrieval_mode
             use_shell = sys.platform == "win32"
 
             if name == "qmd":
@@ -572,6 +575,7 @@ def make_control_plane_handler(repo_root: Path, static_dir: Path, logger: Option
                 env_dict = read_env_dict(repo_root / ".env")
                 tunnel_url = env_dict.get("TUNNEL_URL", "https://kb.parmeterai.space/mcp")
                 mirror_host = env_dict.get("MIRROR_HOST", "https://qmd-mirror.pages.dev")
+                retrieval_mode = env_dict.get("RETRIEVAL_MODE", "cpu-only").lower()
 
                 qmd_ok = check_port_listening("127.0.0.1", 8181)
                 proxy_ok = check_port_listening("127.0.0.1", 3210)
@@ -587,6 +591,7 @@ def make_control_plane_handler(repo_root: Path, static_dir: Path, logger: Option
                 task_status = runner.get_status()
 
                 data = {
+                    "retrieval_mode": retrieval_mode,
                     "services": {
                         "qmd": {"ok": qmd_ok, "port": 8181, "name": "QMD MCP Server"},
                         "auth_proxy": {"ok": proxy_ok, "port": 3210, "name": "Auth Proxy (OAuth)"},
@@ -640,12 +645,15 @@ def make_control_plane_handler(repo_root: Path, static_dir: Path, logger: Option
 
             if path == "/api/search":
                 query = params.get("q", [""])[0].strip()
+                silo = params.get("silo", [""])[0].strip() or params.get("collection", [""])[0].strip()
                 filter_json = params.get("filter", [""])[0].strip()
                 if not query:
                     self.send_json(400, {"error": "Missing query 'q'"})
                     return
 
                 qmd_args = ["search", query]
+                if silo and silo.lower() != "all":
+                    qmd_args.extend(["-c", silo])
                 if filter_json:
                     qmd_args.extend(["--filter", filter_json])
 
@@ -663,7 +671,7 @@ def make_control_plane_handler(repo_root: Path, static_dir: Path, logger: Option
                         timeout=45,
                     )
                     raw_out = res.stdout if res.stdout else res.stderr
-                    self.send_json(200, {"query": query, "filter": filter_json, "output": raw_out, "exit_code": res.returncode})
+                    self.send_json(200, {"query": query, "silo": silo or "all", "filter": filter_json, "output": raw_out, "exit_code": res.returncode})
                 except subprocess.TimeoutExpired:
                     self.send_json(504, {"error": "Search timed out"})
                 except Exception as e:
@@ -720,6 +728,32 @@ def make_control_plane_handler(repo_root: Path, static_dir: Path, logger: Option
             if path == "/api/stop":
                 stopped = runner.stop_current()
                 self.send_json(200, {"status": "stopped" if stopped else "not_running"})
+                return
+
+            if path == "/api/engine/mode":
+                try:
+                    payload = json.loads(body.decode("utf-8")) if body else {}
+                except Exception:
+                    self.send_json(400, {"error": "Invalid JSON"})
+                    return
+
+                mode = payload.get("mode", "").strip().lower()
+                if mode not in ("cpu-only", "full"):
+                    self.send_json(400, {"error": "Invalid mode. Must be 'cpu-only' or 'full'"})
+                    return
+
+                write_env_dict(repo_root / ".env", {"RETRIEVAL_MODE": mode})
+
+                res_qmd = supervisor.restart_daemon("qmd")
+                res_proxy = supervisor.restart_daemon("auth_proxy")
+
+                self.send_json(200, {
+                    "retrieval_mode": mode,
+                    "restarted": {
+                        "qmd": res_qmd,
+                        "auth_proxy": res_proxy,
+                    },
+                })
                 return
 
             if path == "/api/daemons":

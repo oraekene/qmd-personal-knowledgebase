@@ -24,12 +24,41 @@
     </header>
 
     <main class="main-content">
-      <!-- Section 1: Service Status Cards -->
+      <!-- Section 1: Service Status Cards & Engine Mode -->
       <section class="section">
         <div class="section-header">
-          <h2>Service Monitor</h2>
+          <h2>Service Monitor & Engine Mode</h2>
           <span class="refresh-indicator" id="status-timer">Auto-refreshing</span>
         </div>
+
+        <!-- Engine Retrieval Mode Control Card -->
+        <div class="card" style="margin-bottom: 16px; border: 1px solid var(--accent); background: linear-gradient(135deg, rgba(30,41,59,0.7), rgba(15,23,42,0.9));">
+          <div class="card-header" style="border-bottom: 1px solid rgba(255,255,255,0.08); padding-bottom: 10px;">
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <span style="font-size: 1.4rem;">⚡</span>
+              <div>
+                <span class="card-title" style="font-size: 1.05rem;">Engine Retrieval Mode</span>
+                <span class="meta-desc" style="display:block; margin:0; font-size: 0.8rem;">Controls QMD query expansion, vector reranking, and CPU latency</span>
+              </div>
+            </div>
+            <span class="badge badge-green" id="badge-engine-mode" style="font-size: 0.85rem; padding: 4px 10px;">⚡ CPU-Only Mode</span>
+          </div>
+          <div class="card-body" style="padding-top: 12px; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 16px;">
+            <div style="max-width: 650px;">
+              <p style="margin: 0 0 6px 0; font-size: 0.88rem; color: var(--text);">
+                <strong>Current Configuration:</strong> <span id="desc-engine-mode">Fast sub-second BM25 search with OR fallback; vector embedding & LLM reranking bypassed for instant CPU response without timeouts.</span>
+              </p>
+              <span class="meta-desc" style="font-size: 0.78rem; color: var(--text-muted);">
+                Switching modes automatically updates <code>.env</code> and reloads background services.
+              </span>
+            </div>
+            <div style="display: flex; gap: 8px;">
+              <button class="btn btn-sm btn-primary" id="btn-mode-cpu" onclick="switchEngineMode('cpu-only')">⚡ CPU-Only (Fast)</button>
+              <button class="btn btn-sm btn-outline" id="btn-mode-full" onclick="switchEngineMode('full')">🧠 Full (Hybrid + Rerank)</button>
+            </div>
+          </div>
+        </div>
+
         <div class="grid grid-4" id="services-grid">
           <!-- QMD MCP Server Card -->
           <div class="card status-card" id="card-qmd">
@@ -240,8 +269,18 @@
         </div>
         <div class="card search-card">
           <form id="search-form" onsubmit="event.preventDefault(); executeSearch();">
-            <div class="search-input-group">
-              <input type="text" id="search-query" placeholder="e.g. OCR selection rationale, solar sizing algorithm, prompt injection..." class="input-text">
+            <div class="search-input-group" style="display: flex; gap: 8px;">
+              <select id="search-silo" class="input-text" style="max-width: 170px; background: var(--bg-card); cursor: pointer; color: var(--text);">
+                <option value="all">📂 All Silos</option>
+                <option value="notes">📝 Notes</option>
+                <option value="wiki">🧠 Wiki</option>
+                <option value="github">🐙 GitHub</option>
+                <option value="chats">💬 AI Chats</option>
+                <option value="pdfs">📄 PDFs</option>
+                <option value="web">🌐 Web</option>
+                <option value="twitter">🐦 X / Twitter</option>
+              </select>
+              <input type="text" id="search-query" placeholder="e.g. OCR selection rationale, solar sizing algorithm, prompt injection..." class="input-text" style="flex: 1;">
               <button type="submit" class="btn btn-primary" id="btn-search">Search QMD</button>
             </div>
             <div style="margin-top: 8px;">

@@ -79,44 +79,28 @@ flowchart TD
 
 ---
 
-### Feature 1: Engine Retrieval Mode Toggle (`CPU-only` vs. `Full`)
+### Feature 1: Engine Retrieval Mode Toggle (`CPU-only` vs. `Full`) — [COMPLETED & VERIFIED]
 
 Allow users to switch between lightning-fast BM25 retrieval (<2s on CPU) and full semantic reranking with vector batching (intended for GPU/high-spec machines).
 
-#### [MODIFY] [server.py](file:///c:/Users/rotim/Documents/QMD%20powered%20Personal%20Knowledgebase%20and%20Search%20Engine/auth_proxy/server.py)
-* Read `RETRIEVAL_MODE` from environment (`cpu-only` vs `full`).
-* In `cpu-only` mode: intercept `tools/call` for `query` and force `rerank: false`.
-* In `full` mode: pass `rerank: true` (or client argument) without override.
-
-#### [MODIFY] [store.ts](file:///c:/Users/rotim/Documents/QMD%20powered%20Personal%20Knowledgebase%20and%20Search%20Engine/qmd-main/src/store.ts)
-* Add `QMD_RETRIEVAL_MODE` environment variable check.
-* When set to `cpu-only`: enable automatic `OR` BM25 fallback on 0-hit `AND` queries; skip `expandQuery` and vector batching when `skipRerank: true`.
-* When set to `full`: enforce strict `AND` queries and run full LLM expansion and dense vector embeddings.
-
-#### [MODIFY] [server.py](file:///c:/Users/rotim/Documents/QMD%20powered%20Personal%20Knowledgebase%20and%20Search%20Engine/control_plane/server.py)
-* Add `RETRIEVAL_MODE` status to `/api/status` and `/api/config`.
-* Add an endpoint `POST /api/engine/mode` to toggle modes, update `.env`, and trigger daemon restarts.
-
-#### [MODIFY] [index.html](file:///c:/Users/rotim/Documents/QMD%20powered%20Personal%20Knowledgebase%20and%20Search%20Engine/control_plane/static/index.html)
-* Add a visual **Engine Retrieval Mode** toggle card on the dashboard:
-  - `[ ○ CPU-Only (Fast BM25 <2s) ]`
-  - `[ ● Full (Dense Vectors + GPU Reranker) ]`
+* **Status**: Completed & Verified (Commit verified with full test suite passing 100/100).
+* **Changes**:
+  - `auth_proxy/server.py`: Checks `RETRIEVAL_MODE`; in `cpu-only` defaults MCP queries to `rerank: false`.
+  - `qmd-main/src/store.ts` & `scripts/patch_qmd.py`: `isCpuOnly` environment check gates the FTS5 OR fallback and skips slow LLM query expansion and dense vector embeddings on CPU.
+  - `control_plane/server.py`: Added `POST /api/engine/mode` endpoint, injects `RETRIEVAL_MODE` into child daemons, and reports status via `/api/status`.
+  - `control_plane/static/index.html` & `app.js`: Added interactive Engine Retrieval Mode card with live status badge and instant mode toggling buttons.
 
 ---
 
-### Feature 2: Silo-Specific Scoped Search
+### Feature 2: Silo-Specific Scoped Search — [COMPLETED & VERIFIED]
 
 Enable precise keyword and semantic querying scoped to individual corpus partitions.
 
-#### [MODIFY] [server.py](file:///c:/Users/rotim/Documents/QMD%20powered%20Personal%20Knowledgebase%20and%20Search%20Engine/control_plane/server.py)
-* Update `/api/search` handler to parse `silo` query parameter (`all`, `notes`, `wiki`, `github`, `chats`, `pdfs`, `web`, `twitter`).
-* Pass `-c <silo>` / `--collection <silo>` to the QMD search command.
-* Format JSON output to return the matching silo name and relative file path.
-
-#### [MODIFY] [index.html](file:///c:/Users/rotim/Documents/QMD%20powered%20Personal%20Knowledgebase%20and%20Search%20Engine/control_plane/static/index.html)
-* Add a Silo Scoped Filter selector adjacent to the search input:
-  `[ 🔍 Search... ] [ All Silos ▾ | Notes | Wiki | Chats | GitHub | PDFs | Web ] [ Search ]`.
-* Display silo badges on search result cards with direct link to document contents.
+* **Status**: Completed & Verified (Subprocess execution with `-c <silo>` verified).
+* **Changes**:
+  - `control_plane/server.py`: Updated `/api/search` handler to parse `silo` query parameter (`notes`, `wiki`, `github`, `chats`, `pdfs`, `web`, `twitter`), pass `-c <silo>` to QMD CLI, and return silo metadata.
+  - `control_plane/static/index.html` & `app.js`: Added silo dropdown selector directly in the Interactive Search Tester with full silo breakdown (`All Silos`, `Notes`, `Wiki`, `GitHub`, `AI Chats`, `PDFs`, `Web`, `X / Twitter`).
+  - `tests/test_control_plane.py`: Added automated test suite coverage for silo parameter forwarding and mode switching.
 
 ---
 

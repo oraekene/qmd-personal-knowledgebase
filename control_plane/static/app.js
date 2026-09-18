@@ -54,6 +54,29 @@ async function fetchStatus() {
       document.getElementById("link-mirror").href = data.services.mirror.url;
     }
 
+    // 1b. Update Engine Retrieval Mode
+    const mode = (data.retrieval_mode || "cpu-only").toLowerCase();
+    const modeBadge = document.getElementById("badge-engine-mode");
+    const modeDesc = document.getElementById("desc-engine-mode");
+    const btnCpu = document.getElementById("btn-mode-cpu");
+    const btnFull = document.getElementById("btn-mode-full");
+
+    if (modeBadge) {
+      if (mode === "cpu-only") {
+        modeBadge.className = "badge badge-green";
+        modeBadge.innerText = "⚡ CPU-Only Mode";
+        if (modeDesc) modeDesc.innerText = "Fast sub-second BM25 search with OR fallback; vector embedding & LLM reranking bypassed for instant CPU response without timeouts.";
+        if (btnCpu) btnCpu.className = "btn btn-sm btn-primary";
+        if (btnFull) btnFull.className = "btn btn-sm btn-outline";
+      } else {
+        modeBadge.className = "badge badge-yellow";
+        modeBadge.innerText = "🧠 Full Hybrid Mode";
+        if (modeDesc) modeDesc.innerText = "Full hybrid search: dense vector embeddings, LLM query expansion, and cross-encoder neural reranking.";
+        if (btnCpu) btnCpu.className = "btn btn-sm btn-outline";
+        if (btnFull) btnFull.className = "btn btn-sm btn-primary";
+      }
+    }
+
     // 2. Update Corpus Counts
     const c = data.corpus;
     document.getElementById("stat-total").innerText = c.total || 0;
@@ -297,9 +320,32 @@ async function controlDaemon(daemon, action) {
   }
 }
 
+// Engine Mode Switcher
+async function switchEngineMode(mode) {
+  try {
+    showToast(`Switching engine mode to ${mode}...`);
+    const res = await fetch("/api/engine/mode", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode }),
+    });
+    const data = await res.json();
+    if (res.ok) {
+      showToast(`Engine mode switched to ${mode.toUpperCase()} (services reloaded)`);
+      setTimeout(fetchStatus, 1000);
+    } else {
+      showToast(data.error || "Failed to switch engine mode", true);
+    }
+  } catch (e) {
+    showToast(`Error: ${e}`, true);
+  }
+}
+
 // Interactive Search Tester
 async function executeSearch() {
   const q = document.getElementById("search-query").value.trim();
+  const siloEl = document.getElementById("search-silo");
+  const silo = siloEl ? siloEl.value.trim() : "all";
   const filterInput = document.getElementById("search-filter");
   const filterVal = filterInput ? filterInput.value.trim() : "";
   if (!q) return;
@@ -310,6 +356,9 @@ async function executeSearch() {
 
   try {
     let url = `/api/search?q=${encodeURIComponent(q)}`;
+    if (silo && silo !== "all") {
+      url += `&silo=${encodeURIComponent(silo)}`;
+    }
     if (filterVal) {
       url += `&filter=${encodeURIComponent(filterVal)}`;
     }

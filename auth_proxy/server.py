@@ -111,8 +111,9 @@ def make_handler(token: str, target: str) -> type[BaseHTTPRequestHandler]:
                 self.wfile.write(b'{"error": "Forbidden origin"}')
                 return
 
-            # If tools/call query without explicit rerank, default to rerank=False for sub-second CPU response
-            if self.command == "POST" and self.path.startswith("/mcp") and body:
+            # If tools/call query in cpu-only mode without explicit rerank, default to rerank=False for sub-second response
+            retrieval_mode = os.getenv("RETRIEVAL_MODE", "cpu-only").lower()
+            if retrieval_mode == "cpu-only" and self.command == "POST" and self.path.startswith("/mcp") and body:
                 try:
                     payload = json.loads(body.decode("utf-8"))
                     if (
