@@ -24,6 +24,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from auth_proxy.oauth import handle_oauth_request
+from auth_proxy.progressive_tools import get_progressive_tools_manifest, handle_progressive_tool_call
 from auth_proxy.prompt_engine import get_prompt_response, list_prompts, synthesize_system_prompt
 from auth_proxy.proxy import _UNAUTHORIZED_BODY, _UNAUTHORIZED_HEADERS, check_auth, check_origin
 
@@ -118,6 +119,7 @@ def make_handler(token: str, target: str) -> type[BaseHTTPRequestHandler]:
                 return
 
             req_is_initialize = False
+            req_is_tools_list = False
             if self.command == "POST" and self.path.startswith("/mcp") and body:
                 try:
                     payload = json.loads(body.decode("utf-8"))
@@ -160,6 +162,49 @@ def make_handler(token: str, target: str) -> type[BaseHTTPRequestHandler]:
 
                     if m == "initialize":
                         req_is_initialize = True
+
+                    # Progressive tool disclosure interception
+                    prog_mode = os.getenv("PROGRESSIVE_TOOLS", "auto").lower()
+                    if m == "tools/list":
+                        if prog_mode in ("1", "true", "on"):
+                            resp_payload = {
+                                "jsonrpc": "2.0",
+                                "id": payload.get("id"),
+                                "result": {"tools": get_progressive_tools_manifest()},
+                            }
+                            resp_body = json.dumps(resp_payload).encode("utf-8")
+                            self.send_response(200)
+                            self.send_header("Content-Type", "application/json")
+                            self.send_header("Content-Length", str(len(resp_body)))
+                            self.end_headers()
+                            self.wfile.write(resp_body)
+                            return
+                        else:
+                            req_is_tools_list = True
+
+                    if m == "tools/call":
+                        tool_name = payload.get("params", {}).get("name", "")
+                        if tool_name in (
+                            "skills_list",
+                            "skill_view",
+                            "tool_search",
+                            "tool_describe",
+                            "tool_call",
+                        ):
+                            tool_args = payload.get("params", {}).get("arguments", {})
+                            res = handle_progressive_tool_call(tool_name, tool_args, REPO_ROOT)
+                            resp_payload = {
+                                "jsonrpc": "2.0",
+                                "id": payload.get("id"),
+                                "result": res,
+                            }
+                            resp_body = json.dumps(resp_payload).encode("utf-8")
+                            self.send_response(200)
+                            self.send_header("Content-Type", "application/json")
+                            self.send_header("Content-Length", str(len(resp_body)))
+                            self.end_headers()
+                            self.wfile.write(resp_body)
+                            return
 
                     # If tools/call query in cpu-only mode without explicit rerank, default to rerank=False for sub-second response
                     retrieval_mode = os.getenv("RETRIEVAL_MODE", "cpu-only").lower()
@@ -246,6 +291,38 @@ def make_handler(token: str, target: str) -> type[BaseHTTPRequestHandler]:
                                     resp_body = json.dumps(init_data).encode("utf-8")
                         except Exception as ex:
                             logger.warning("Failed to inject initialize instructions: %s", ex)
+
+                    # If response is to tools/list, ensure progressive tools are also available
+                    if req_is_tools_list and resp.status == 200:
+                        try:
+                            raw_text = resp_body.decode("utf-8")
+                            is_sse = False
+                            prefix = ""
+                            suffix = ""
+                            json_text = raw_text
+
+                            if "data: " in raw_text:
+                                is_sse = True
+                                lines = raw_text.splitlines(keepends=True)
+                                for i, line in enumerate(lines):
+                                    if line.startswith("data: "):
+                                        prefix = "".join(lines[:i]) + "data: "
+                                        suffix = "".join(lines[i + 1:])
+                                        json_text = line[len("data: "):].strip()
+                                        break
+
+                            t_data = json.loads(json_text)
+                            if "result" in t_data and "tools" in t_data["result"]:
+                                existing_names = {t["name"] for t in t_data["result"]["tools"]}
+                                for pt in get_progressive_tools_manifest():
+                                    if pt["name"] not in existing_names:
+                                        t_data["result"]["tools"].append(pt)
+                                if is_sse:
+                                    resp_body = (prefix + json.dumps(t_data) + suffix).encode("utf-8")
+                                else:
+                                    resp_body = json.dumps(t_data).encode("utf-8")
+                        except Exception as ex:
+                            logger.warning("Failed to inject progressive tools into tools/list response: %s", ex)
 
                     self.send_response(resp.status)
                     # Strip hop-by-hop headers to prevent protocol breakage (e.g. dechunked body with chunked header)

@@ -309,6 +309,41 @@ def test_control_plane_http_server(tmp_path: Path):
                 assert conn_res["title"] == "Mocked YouTube Ingestion"
                 assert (tmp_path / "corpus" / "web" / "youtube_test123.md").exists()
 
+        # 17. GET /api/skills
+        skill_dir = tmp_path / "skills" / "demo-skill"
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: demo-skill\ndescription: Demo skill description\n---\n# Demo Skill\nInstructions here.",
+            encoding="utf-8",
+        )
+        with urllib.request.urlopen(f"{base_url}/api/skills") as resp:
+            assert resp.status == 200
+            s_data = json.loads(resp.read().decode())
+            assert "skills" in s_data
+            assert any(s["name"] == "demo-skill" for s in s_data["skills"])
+
+        # 18. GET /api/skills/{name}
+        with urllib.request.urlopen(f"{base_url}/api/skills/demo-skill") as resp:
+            assert resp.status == 200
+            sk_content = json.loads(resp.read().decode())
+            assert sk_content["name"] == "demo-skill"
+            assert "# Demo Skill" in sk_content["content"]
+
+        try:
+            urllib.request.urlopen(f"{base_url}/api/skills/unknown-skill-xyz")
+            assert False, "Should have returned 404"
+        except urllib.error.HTTPError as e:
+            assert e.code == 404
+
+        # 19. GET /api/tools
+        with urllib.request.urlopen(f"{base_url}/api/tools") as resp:
+            assert resp.status == 200
+            t_data = json.loads(resp.read().decode())
+            assert "catalog" in t_data
+            assert "progressive_manifest" in t_data
+            assert any(t["name"] == "search" for t in t_data["catalog"])
+            assert any(t["name"] == "skills_list" for t in t_data["progressive_manifest"])
+
     finally:
         server.shutdown()
         server.server_close()

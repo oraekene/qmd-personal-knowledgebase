@@ -144,18 +144,31 @@ connectors/
 
 ---
 
-### Feature 5: Progressive Tool Calling & Skill Disclosure (Hermes Pattern)
+### Feature 5: Progressive Tool Calling & Skill Disclosure (Hermes Pattern) — [COMPLETED & VERIFIED]
 
-Eliminate token bloat and tool confusion in thin clients like Claude.ai and Telegram.
+Eliminate token bloat and tool confusion in thin clients like Claude.ai and Telegram by implementing Hermes 3-tier progressive disclosure.
 
-#### [NEW] [progressive_tools.py](file:///c:/Users/rotim/Documents/QMD%20powered%20Personal%20Knowledgebase%20and%20Search%20Engine/auth_proxy/progressive_tools.py)
-* Implements the 3-tier disclosure model researched from Hermes:
-  - **Tier 1 (Catalog)**: `skills_list` returns only names and short descriptions (<200 tokens total).
-  - **Tier 2 (Activation)**: `skill_view(skill_name)` returns full `SKILL.md` instructions when needed.
-  - **Tier 3 (Bridge Execution)**:
-    - `tool_search(query)`: Finds relevant tools by keyword.
-    - `tool_describe(tool_name)`: Returns exact input schema on demand.
-    - `tool_call(tool_name, arguments)`: Dynamically executes the target tool on the server.
+* **Status**: Completed & Verified (124/124 tests passing; skills catalog, progressive MCP interceptor, dynamic execution bridge, Control Plane API endpoints, and interactive UI tab verified).
+* **Changes**:
+  - `skills/`: Created modular skills catalog containing `knowledge-retrieval`, `media-ingestion`, `wiki-synthesis`, and `deep-investigation`. Each skill specifies YAML frontmatter (`name`, `description`, `metadata`) and step-by-step agent instructions.
+  - `auth_proxy/progressive_tools.py`: Implemented full 3-tier progressive disclosure engine:
+    - **Tier 1 (Catalog)**: `list_skills()` returns lightweight skill summaries strictly bounded to <200 tokens.
+    - **Tier 2 (Activation)**: `view_skill(name)` safely renders full `SKILL.md` markdown with path traversal protection.
+    - **Tier 3 (Bridge Execution)**:
+      - `TOOL_REGISTRY`: Master catalog of 11 tools with JSON Schema definitions.
+      - `search_tools(query)`: Fuzzy keyword matching across names, descriptions, and tags.
+      - `describe_tool(name)`: On-demand input schema generator.
+      - `call_tool(name, arguments)`: Dynamic server-side executor supporting recursive tool calls, file retrieval, URL ingestion, search, and status.
+      - `get_progressive_tools_manifest()`: Curated 7-tool manifest (<1,000 tokens) advertised when progressive mode is enabled.
+      - `handle_progressive_tool_call()`: Generates compliant MCP JSON-RPC tool result envelopes.
+  - `auth_proxy/server.py`:
+    - Intercepts MCP `tools/list`: returns the curated 7-tool progressive manifest when `PROGRESSIVE_TOOLS=1` (or merges into upstream in auto/hybrid mode).
+    - Intercepts MCP `tools/call`: executes `skills_list`, `skill_view`, `tool_search`, `tool_describe`, `tool_call` locally without upstream forwarding.
+  - `control_plane/server.py`: Added REST endpoints `GET /api/skills`, `GET /api/skills/{name}`, and `GET /api/tools`.
+  - `control_plane/static/index.html` & `app.js`: Added "🧩 Skills & Tools (Hermes)" tab inside the Persona & Prompts modal with live skill browsing, preview viewer, and tools catalog inspector.
+  - `tests/test_progressive_tools.py`: Added 9 tests covering frontmatter parsing, skill listing, skill viewing, tool search, tool describe, dynamic execution, and MCP handlers.
+  - `tests/test_auth_proxy.py`: Added tests for `tools/list` progressive manifest interception and `tools/call` local execution.
+  - `tests/test_control_plane.py`: Added tests for `/api/skills` and `/api/tools` endpoints.
 
 ---
 

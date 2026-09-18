@@ -2,6 +2,8 @@
 # Per #18 + research #4 + spec.md:128-131 + #12 prototype 095fffa
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from auth_proxy.proxy import ProxyApp, check_auth, check_origin, create_proxy_app, unauthorized_response
@@ -425,4 +427,119 @@ def test_auth_proxy_mcp_prompts_list_and_get() -> None:
     res_get = json.loads(fake_get.wfile.getvalue().decode())
     assert res_get["id"] == 102
     assert "messages" in res_get["result"]
+
+
+def test_progressive_tools_list_interception(monkeypatch) -> None:
+    """When PROGRESSIVE_TOOLS=1, tools/list returns curated progressive manifest directly."""
+    import io
+    monkeypatch.setenv("PROGRESSIVE_TOOLS", "1")
+    handler_cls = make_handler("valid_tok", "http://127.0.0.1:9999")
+
+    class FakeReqList:
+        def __init__(self):
+            self.command = "POST"
+            self.path = "/mcp"
+            self.headers = {"Authorization": "Bearer valid_tok"}
+            body = json.dumps({
+                "jsonrpc": "2.0",
+                "id": 201,
+                "method": "tools/list",
+                "params": {}
+            }).encode()
+            self.rfile = io.BytesIO(body)
+            self.headers["Content-Length"] = str(len(body))
+            self.wfile = io.BytesIO()
+            self._code = 0
+            self._headers = {}
+
+        def send_response(self, code, message=None):
+            self._code = code
+
+        def send_header(self, k, v):
+            self._headers[k] = v
+
+        def end_headers(self):
+            pass
+
+    fake_req = FakeReqList()
+    h = handler_cls.__new__(handler_cls)
+    h.command = fake_req.command
+    h.path = fake_req.path
+    h.headers = fake_req.headers
+    h.rfile = fake_req.rfile
+    h.wfile = fake_req.wfile
+    h.send_response = fake_req.send_response
+    h.send_header = fake_req.send_header
+    h.end_headers = fake_req.end_headers
+    h.client_address = ("127.0.0.1", 12345)
+    h.log_date_time_string = lambda: "now"
+
+    handler_cls._proxy_request(h)
+    assert fake_req._code == 200
+    data = json.loads(fake_req.wfile.getvalue().decode())
+    assert data["id"] == 201
+    tools = data["result"]["tools"]
+    assert len(tools) == 7
+    names = {t["name"] for t in tools}
+    assert "skills_list" in names
+    assert "tool_search" in names
+
+
+def test_progressive_tools_call_interception() -> None:
+    """skills_list, skill_view, tool_search, tool_describe, tool_call are handled directly by proxy."""
+    import io
+    handler_cls = make_handler("valid_tok", "http://127.0.0.1:9999")
+
+    class FakeReqCall:
+        def __init__(self):
+            self.command = "POST"
+            self.path = "/mcp"
+            self.headers = {"Authorization": "Bearer valid_tok"}
+            body = json.dumps({
+                "jsonrpc": "2.0",
+                "id": 202,
+                "method": "tools/call",
+                "params": {
+                    "name": "skills_list",
+                    "arguments": {}
+                }
+            }).encode()
+            self.rfile = io.BytesIO(body)
+            self.headers["Content-Length"] = str(len(body))
+            self.wfile = io.BytesIO()
+            self._code = 0
+            self._headers = {}
+
+        def send_response(self, code, message=None):
+            self._code = code
+
+        def send_header(self, k, v):
+            self._headers[k] = v
+
+        def end_headers(self):
+            pass
+
+    fake_req = FakeReqCall()
+    h = handler_cls.__new__(handler_cls)
+    h.command = fake_req.command
+    h.path = fake_req.path
+    h.headers = fake_req.headers
+    h.rfile = fake_req.rfile
+    h.wfile = fake_req.wfile
+    h.send_response = fake_req.send_response
+    h.send_header = fake_req.send_header
+    h.end_headers = fake_req.end_headers
+    h.client_address = ("127.0.0.1", 12345)
+    h.log_date_time_string = lambda: "now"
+
+    handler_cls._proxy_request(h)
+    assert fake_req._code == 200
+    data = json.loads(fake_req.wfile.getvalue().decode())
+    assert data["id"] == 202
+    assert "result" in data
+    assert data["result"]["isError"] is False
+    content_text = data["result"]["content"][0]["text"]
+    skills = json.loads(content_text)
+    assert any(s["name"] == "knowledge-retrieval" for s in skills)
+
 

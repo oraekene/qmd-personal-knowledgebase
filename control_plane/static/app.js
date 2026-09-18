@@ -542,6 +542,57 @@ async function openPrompts() {
       tplList.appendChild(card);
     });
 
+    // Load Skills & Progressive Tools
+    try {
+      const skillsRes = await fetch("/api/skills");
+      const skillsData = await skillsRes.json();
+      const skillsList = document.getElementById("skills-catalog-list");
+      if (skillsList && skillsData.skills) {
+        skillsList.innerHTML = "";
+        skillsData.skills.forEach(s => {
+          const item = document.createElement("div");
+          item.className = "card";
+          item.style.padding = "8px 12px";
+          item.style.background = "rgba(255,255,255,0.03)";
+          item.style.border = "1px solid rgba(255,255,255,0.08)";
+          item.style.borderRadius = "6px";
+          item.innerHTML = `
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <strong style="color:var(--primary); font-family:monospace; font-size:0.9rem;">🧩 ${escapeHtml(s.name)}</strong>
+              <span class="badge badge-green" style="font-size:10px;">Tier 1 Active</span>
+            </div>
+            <p style="margin:4px 0 0 0; font-size:0.8rem; color:var(--text);">${escapeHtml(s.description)}</p>
+          `;
+          skillsList.appendChild(item);
+        });
+      }
+
+      const toolsRes = await fetch("/api/tools");
+      const toolsData = await toolsRes.json();
+      const toolsList = document.getElementById("progressive-tools-list");
+      if (toolsList && toolsData.progressive_manifest) {
+        toolsList.innerHTML = "";
+        toolsData.progressive_manifest.forEach(t => {
+          const tItem = document.createElement("div");
+          tItem.className = "card";
+          tItem.style.padding = "8px 12px";
+          tItem.style.background = "rgba(255,255,255,0.03)";
+          tItem.style.border = "1px solid rgba(255,255,255,0.08)";
+          tItem.style.borderRadius = "6px";
+          tItem.innerHTML = `
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <strong style="color:var(--accent-blue, #60a5fa); font-family:monospace; font-size:0.88rem;">⚡ ${escapeHtml(t.name)}</strong>
+              <span class="badge badge-gray" style="font-size:10px;">Bridge Tool</span>
+            </div>
+            <p style="margin:4px 0 0 0; font-size:0.78rem; color:var(--text-muted);">${escapeHtml(t.description)}</p>
+          `;
+          toolsList.appendChild(tItem);
+        });
+      }
+    } catch (err) {
+      console.warn("Failed to load skills/tools:", err);
+    }
+
     switchPromptTab("soul");
     document.getElementById("prompts-modal").style.display = "flex";
   } catch (e) {
@@ -554,7 +605,7 @@ function closePrompts() {
 }
 
 function switchPromptTab(tabName) {
-  const tabs = ["soul", "system", "preview", "templates"];
+  const tabs = ["soul", "system", "preview", "templates", "skills"];
   tabs.forEach(t => {
     const btn = document.getElementById(`tab-btn-${t}`);
     const panel = document.getElementById(`tab-content-${t}`);

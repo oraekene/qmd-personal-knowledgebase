@@ -712,6 +712,30 @@ def make_control_plane_handler(repo_root: Path, static_dir: Path, logger: Option
                 })
                 return
 
+            if path == "/api/skills":
+                from auth_proxy.progressive_tools import list_skills
+                skills = list_skills(repo_root / "skills")
+                self.send_json(200, {"skills": skills, "count": len(skills)})
+                return
+
+            if path.startswith("/api/skills/"):
+                skill_name = path[len("/api/skills/"):].strip()
+                from auth_proxy.progressive_tools import view_skill
+                try:
+                    content = view_skill(skill_name, repo_root / "skills")
+                    self.send_json(200, {"name": skill_name, "content": content})
+                except Exception as e:
+                    self.send_json(404, {"error": str(e)})
+                return
+
+            if path == "/api/tools":
+                from auth_proxy.progressive_tools import TOOL_REGISTRY, get_progressive_tools_manifest
+                self.send_json(200, {
+                    "catalog": list(TOOL_REGISTRY.values()),
+                    "progressive_manifest": get_progressive_tools_manifest(),
+                })
+                return
+
             if path == "" or path == "/":
                 self.path = "/index.html"
             super().do_GET()

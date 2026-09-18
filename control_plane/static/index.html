@@ -417,6 +417,7 @@
             <button type="button" class="btn btn-xs btn-filter" id="tab-btn-system" onclick="switchPromptTab('system')">SYSTEM_PROMPT.md (Rules & Silos)</button>
             <button type="button" class="btn btn-xs btn-filter" id="tab-btn-preview" onclick="switchPromptTab('preview')">Live Synthesized Instructions</button>
             <button type="button" class="btn btn-xs btn-filter" id="tab-btn-templates" onclick="switchPromptTab('templates')">MCP Prompt Templates</button>
+            <button type="button" class="btn btn-xs btn-filter" id="tab-btn-skills" onclick="switchPromptTab('skills')">🧩 Skills & Tools (Hermes)</button>
           </div>
 
           <form id="prompts-form" onsubmit="event.preventDefault(); savePrompts();">
@@ -431,17 +432,17 @@
             <!-- Tab 2: SYSTEM_PROMPT.md -->
             <div id="tab-content-system" class="prompt-tab-panel" style="display: none;">
               <label style="display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 6px;">
-                Knowledgebase Retrieval Guidelines & Silo Rules (SYSTEM_PROMPT.md)
+                Operational Retrieval Protocols & Silos (SYSTEM_PROMPT.md)
               </label>
               <textarea id="prompt-sys-editor" class="input-text" style="width: 100%; height: 260px; font-family: monospace; font-size: 0.85rem; line-height: 1.5; resize: vertical;"></textarea>
             </div>
 
-            <!-- Tab 3: Synthesized Preview -->
+            <!-- Tab 3: Synthesized Instructions Preview -->
             <div id="tab-content-preview" class="prompt-tab-panel" style="display: none;">
               <label style="display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 6px;">
-                Combined Instructions Injected into MCP initialize & Thin Clients
+                Synthesized Prompt Preview (Injected on MCP Initialize)
               </label>
-              <pre id="prompt-preview-view" class="code-block" style="max-height: 280px; overflow-y: auto; font-size: 0.8rem;"></pre>
+              <pre id="prompt-preview-view" class="code-block" style="height: 260px; overflow-y: auto; font-size: 0.8rem;"></pre>
             </div>
 
             <!-- Tab 4: Prompt Templates -->
@@ -450,6 +451,19 @@
                 Available MCP Prompt Templates (prompts/list)
               </label>
               <div id="prompt-templates-list" style="display: flex; flex-direction: column; gap: 8px;"></div>
+            </div>
+
+            <!-- Tab 5: Skills & Progressive Tools -->
+            <div id="tab-content-skills" class="prompt-tab-panel" style="display: none;">
+              <label style="display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 6px;">
+                Specialized Skills Catalog (Hermes 3-Tier Progressive Disclosure)
+              </label>
+              <div id="skills-catalog-list" style="display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px;"></div>
+
+              <label style="display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 6px;">
+                Dynamic Bridge Tools (tool_search / tool_describe / tool_call)
+              </label>
+              <div id="progressive-tools-list" style="display: flex; flex-direction: column; gap: 8px;"></div>
             </div>
 
             <div class="form-actions" style="margin-top: 16px;">
