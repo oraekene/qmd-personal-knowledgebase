@@ -698,6 +698,20 @@ def make_control_plane_handler(repo_root: Path, static_dir: Path, logger: Option
                     self.send_json(500, {"error": f"Search failed: {e}"})
                 return
 
+            if path == "/api/connectors":
+                try:
+                    from connectors.reach import AgentReachConnector
+                    rc = AgentReachConnector(repo_root / "corpus")
+                    ok, msg = rc.health_check()
+                except Exception as e:
+                    ok, msg = False, str(e)
+
+                self.send_json(200, {
+                    "reach": {"ok": ok, "details": msg},
+                    "channels": ["youtube", "twitter", "reddit", "web", "github"],
+                })
+                return
+
             if path == "" or path == "/":
                 self.path = "/index.html"
             super().do_GET()
@@ -840,6 +854,69 @@ def make_control_plane_handler(repo_root: Path, static_dir: Path, logger: Option
                     return
 
                 self.send_json(400, {"error": "Invalid action or daemon"})
+                return
+
+            if path in (
+                "/api/connectors/reach",
+                "/api/connectors/youtube",
+                "/api/connectors/twitter",
+                "/api/connectors/reddit",
+                "/api/connectors/web",
+                "/api/connectors/github",
+            ):
+                try:
+                    payload = json.loads(body.decode("utf-8")) if body else {}
+                except Exception:
+                    self.send_json(400, {"error": "Invalid JSON"})
+                    return
+
+                url = payload.get("url", "").strip() or payload.get("repo", "").strip()
+                if not url:
+                    self.send_json(400, {"error": "Missing 'url' or 'repo' in request body"})
+                    return
+
+                channel_type = payload.get("type", "").strip().lower()
+                if not channel_type or channel_type == "auto":
+                    if path == "/api/connectors/youtube":
+                        channel_type = "youtube"
+                    elif path == "/api/connectors/twitter":
+                        channel_type = "twitter"
+                    elif path == "/api/connectors/reddit":
+                        channel_type = "reddit"
+                    elif path == "/api/connectors/web":
+                        channel_type = "web"
+                    elif path == "/api/connectors/github":
+                        channel_type = "github"
+                    else:
+                        channel_type = "auto"
+
+                transcribe = bool(payload.get("transcribe", False))
+
+                try:
+                    from connectors.reach import ingest_url
+                    target_path, unit = ingest_url(
+                        url=url,
+                        corpus_root=repo_root / "corpus",
+                        channel_type=channel_type,
+                        transcribe_audio=transcribe,
+                    )
+                    system_logger.log(
+                        "CONNECTOR",
+                        f"Ingested {unit.source} from {url} into {target_path.relative_to(repo_root)} ({unit.title})"
+                    )
+                    self.send_json(200, {
+                        "status": "success",
+                        "file": str(target_path.relative_to(repo_root)).replace("\\", "/"),
+                        "title": unit.title,
+                        "silo": unit.silo,
+                        "source": unit.source,
+                        "summary": unit.summary,
+                        "author": unit.author,
+                        "url": unit.url,
+                    })
+                except Exception as e:
+                    system_logger.log("CONNECTOR", f"Failed to ingest {url}: {e}", level="ERROR")
+                    self.send_json(500, {"error": f"Ingestion failed: {e}"})
                 return
 
             if path == "/api/upload":

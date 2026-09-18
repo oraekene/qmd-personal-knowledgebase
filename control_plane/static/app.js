@@ -597,3 +597,59 @@ async function savePrompts() {
   }
 }
 
+// Agent-Reach & URL Ingestion
+async function ingestReachUrl() {
+  const urlInput = document.getElementById("reach-url");
+  const channelSelect = document.getElementById("reach-channel");
+  const transcribeCheckbox = document.getElementById("reach-transcribe");
+  const btn = document.getElementById("btn-reach-ingest");
+  const resultBox = document.getElementById("reach-result-box");
+  const resultContent = document.getElementById("reach-result-content");
+
+  const url = urlInput.value.trim();
+  if (!url) return;
+
+  const channel = channelSelect ? channelSelect.value : "auto";
+  const transcribe = transcribeCheckbox ? transcribeCheckbox.checked : false;
+
+  btn.disabled = true;
+  btn.innerText = "⏳ Ingesting...";
+  resultBox.style.display = "block";
+  resultContent.innerHTML = `<span style="color: var(--text-muted);">Fetching and parsing <code>${escapeHtml(url)}</code>...</span>`;
+
+  try {
+    const res = await fetch("/api/connectors/reach", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url, type: channel, transcribe }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || "Ingestion failed");
+    }
+
+    resultContent.innerHTML = `
+      <div style="color: var(--success); font-weight: 600; margin-bottom: 6px;">
+        ✅ Successfully Ingested into <code>corpus/${escapeHtml(data.silo)}/</code>!
+      </div>
+      <div style="font-size: 0.9rem; margin-bottom: 4px;"><strong>Title:</strong> ${escapeHtml(data.title)}</div>
+      <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 4px;"><strong>Summary:</strong> ${escapeHtml(data.summary)}</div>
+      <div style="font-size: 0.8rem; font-family: monospace; color: var(--primary);">File: ${escapeHtml(data.file)}</div>
+    `;
+    urlInput.value = "";
+    showToast("URL ingested into knowledgebase!");
+    fetchStatus();
+  } catch (err) {
+    resultContent.innerHTML = `
+      <div style="color: var(--danger); font-weight: 600;">
+        ❌ Ingestion Error: ${escapeHtml(err.message)}
+      </div>
+    `;
+    showToast(`Ingestion failed: ${err.message}`, true);
+  } finally {
+    btn.disabled = false;
+    btn.innerText = "⚡ Ingest URL";
+  }
+}
+
+

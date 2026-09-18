@@ -262,6 +262,41 @@
         </section>
       </div>
 
+      <!-- Section 4B: Agent-Reach Universal Ingestion & Connectors -->
+      <section class="section">
+        <div class="section-header">
+          <div>
+            <h2>🌐 Agent-Reach Connectors & URL Ingestion</h2>
+            <span class="subtitle-hint">Directly ingest YouTube video transcripts, Twitter/X threads, Reddit posts, GitHub repos, or web articles into your corpus</span>
+          </div>
+        </div>
+        <div class="card" style="padding: 18px;">
+          <form id="reach-form" onsubmit="event.preventDefault(); ingestReachUrl();">
+            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+              <select id="reach-channel" class="input-text" style="max-width: 200px; background: var(--bg-card); cursor: pointer; color: var(--text);">
+                <option value="auto">✨ Auto-Detect Channel</option>
+                <option value="youtube">▶️ YouTube Video / Audio</option>
+                <option value="twitter">🐦 Twitter / X Thread</option>
+                <option value="reddit">🤖 Reddit Discussion</option>
+                <option value="web">🌐 Web Page / Jina Reader</option>
+                <option value="github">🐙 GitHub Repository</option>
+              </select>
+              <input type="url" id="reach-url" placeholder="Paste URL here: https://youtube.com/watch?v=..., https://x.com/..., https://reddit.com/r/..., https://..." class="input-text" style="flex: 1; min-width: 280px;" required>
+              <button type="submit" class="btn btn-primary" id="btn-reach-ingest">⚡ Ingest URL</button>
+            </div>
+            <div style="margin-top: 10px; display: flex; align-items: center; gap: 14px; flex-wrap: wrap; font-size: 0.85rem; color: var(--text-muted);">
+              <label class="checkbox-label" style="cursor: pointer;">
+                <input type="checkbox" id="reach-transcribe"> 🎙️ Transcribe Audio (Whisper for YouTube videos)
+              </label>
+              <span>• Auto-saves directly into matching silo with locked 9-field frontmatter</span>
+            </div>
+          </form>
+          <div id="reach-result-box" style="display: none; margin-top: 14px; padding: 12px; border-radius: 6px; background: var(--bg-terminal); border: 1px solid var(--border);">
+            <div id="reach-result-content"></div>
+          </div>
+        </div>
+      </section>
+
       <!-- Section 5: Instant Search Tester -->
       <section class="section">
         <div class="section-header">

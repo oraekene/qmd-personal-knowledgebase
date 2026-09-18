@@ -262,6 +262,53 @@ def test_control_plane_http_server(tmp_path: Path):
         assert (tmp_path / "SOUL.md").read_text(encoding="utf-8").strip() == "Updated Persona"
         assert (tmp_path / "SYSTEM_PROMPT.md").read_text(encoding="utf-8").strip() == "Updated System Guidelines"
 
+        # 14. GET /api/connectors
+        with urllib.request.urlopen(f"{base_url}/api/connectors") as resp:
+            assert resp.status == 200
+            c_data = json.loads(resp.read().decode())
+            assert "reach" in c_data
+            assert "channels" in c_data
+            assert "youtube" in c_data["channels"]
+
+        # 15. POST /api/connectors/reach with missing url returns 400
+        bad_conn_req = urllib.request.Request(
+            f"{base_url}/api/connectors/reach",
+            data=json.dumps({"type": "youtube"}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            urllib.request.urlopen(bad_conn_req)
+            assert False, "Should have failed with 400"
+        except urllib.error.HTTPError as e:
+            assert e.code == 400
+
+        # 16. POST /api/connectors/reach with valid input
+        with patch("connectors.reach.extract_youtube") as mock_extract:
+            from connectors.sdk.base import UnitPayload
+            mock_extract.return_value = UnitPayload(
+                source="youtube",
+                silo="web",
+                source_id="youtube_test123",
+                url="https://youtu.be/test123",
+                title="Mocked YouTube Ingestion",
+                summary="A mocked summary of the video.",
+                body_markdown="# Mocked YouTube Ingestion\n\nVideo content goes here.",
+            )
+            good_conn_req = urllib.request.Request(
+                f"{base_url}/api/connectors/reach",
+                data=json.dumps({"url": "https://youtu.be/test123", "type": "youtube"}).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(good_conn_req) as resp:
+                assert resp.status == 200
+                conn_res = json.loads(resp.read().decode())
+                assert conn_res["status"] == "success"
+                assert conn_res["silo"] == "web"
+                assert conn_res["title"] == "Mocked YouTube Ingestion"
+                assert (tmp_path / "corpus" / "web" / "youtube_test123.md").exists()
+
     finally:
         server.shutdown()
         server.server_close()
