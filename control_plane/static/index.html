@@ -33,30 +33,80 @@
           <span class="refresh-indicator" id="status-timer">Auto-refreshing</span>
         </div>
 
-        <!-- Engine Retrieval Mode Control Card -->
+        <!-- 3-Tier Operational Mode Control Card -->
         <div class="card" style="margin-bottom: 16px; border: 1px solid var(--accent); background: linear-gradient(135deg, rgba(30,41,59,0.7), rgba(15,23,42,0.9));">
           <div class="card-header" style="border-bottom: 1px solid rgba(255,255,255,0.08); padding-bottom: 10px;">
             <div style="display: flex; align-items: center; gap: 10px;">
-              <span style="font-size: 1.4rem;">⚡</span>
+              <span style="font-size: 1.4rem;">🌐</span>
               <div>
-                <span class="card-title" style="font-size: 1.05rem;">Engine Retrieval Mode</span>
-                <span class="meta-desc" style="display:block; margin:0; font-size: 0.8rem;">Controls QMD query expansion, vector reranking, and CPU latency</span>
+                <span class="card-title" style="font-size: 1.05rem;">3-Tier Operational Mode</span>
+                <span class="meta-desc" style="display:block; margin:0; font-size: 0.8rem;">Switch seamlessly between air-gapped on-device privacy and cloud synchronization</span>
               </div>
             </div>
-            <span class="badge badge-green" id="badge-engine-mode" style="font-size: 0.85rem; padding: 4px 10px;">⚡ CPU-Only Mode</span>
+            <span class="badge badge-green" id="badge-operational-mode" style="font-size: 0.85rem; padding: 4px 10px;">⚡ Offline Only</span>
           </div>
           <div class="card-body" style="padding-top: 12px; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 16px;">
             <div style="max-width: 650px;">
               <p style="margin: 0 0 6px 0; font-size: 0.88rem; color: var(--text);">
-                <strong>Current Configuration:</strong> <span id="desc-engine-mode">Fast sub-second BM25 search with OR fallback; vector embedding & LLM reranking bypassed for instant CPU response without timeouts.</span>
+                <strong>Current Mode:</strong> <span id="desc-operational-mode">100% on-device. Local GGUF models via llama.cpp + local Pi ReAct + SQLite index. Zero network calls.</span>
               </p>
               <span class="meta-desc" style="font-size: 0.78rem; color: var(--text-muted);">
-                Switching modes automatically updates <code>.env</code> and reloads background services.
+                Applies globally across local control plane, Pi Agent harness, and multi-client gateways.
               </span>
             </div>
+            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+              <button class="btn btn-sm btn-primary" id="btn-op-offline" onclick="switchOperationalMode('offline-only')">🔒 Offline Only</button>
+              <button class="btn btn-sm btn-outline" id="btn-op-wiki" onclick="switchOperationalMode('offline+cloudflare-wiki')">🧠 Offline + CF Wiki</button>
+              <button class="btn btn-sm btn-outline" id="btn-op-full" onclick="switchOperationalMode('full')">🌐 Full Cloud Connected</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Cloudflare Artifacts & R2 Sync Card -->
+        <div class="card" style="margin-bottom: 16px; border: 1px solid rgba(255,255,255,0.1); background: var(--bg-card);">
+          <div class="card-header" style="border-bottom: 1px solid rgba(255,255,255,0.08); padding-bottom: 10px; display: flex; justify-content: space-between; align-items: center;">
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <span style="font-size: 1.4rem;">☁️</span>
+              <div>
+                <span class="card-title" style="font-size: 1.05rem;">Cloudflare Artifacts (Git Versioning) & R2 Storage</span>
+                <span class="meta-desc" style="display:block; margin:0; font-size: 0.8rem;">Git-compatible markdown commits + binary snapshots of SQLite & vectors</span>
+              </div>
+            </div>
             <div style="display: flex; gap: 8px;">
-              <button class="btn btn-sm btn-primary" id="btn-mode-cpu" onclick="switchEngineMode('cpu-only')">⚡ CPU-Only (Fast)</button>
-              <button class="btn btn-sm btn-outline" id="btn-mode-full" onclick="switchEngineMode('full')">🧠 Full (Hybrid + Rerank)</button>
+              <button class="btn btn-sm btn-primary" id="btn-trigger-sync" onclick="triggerSync()">☁️ 1-Click Sync</button>
+            </div>
+          </div>
+          <div class="card-body" style="padding-top: 12px;">
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 14px;">
+              <div style="background: rgba(0,0,0,0.2); padding: 8px 12px; border-radius: 6px;">
+                <span class="meta-desc" style="font-size: 0.75rem;">Artifacts Edge Git Repo:</span>
+                <strong style="display: block; font-size: 0.85rem;" id="sync-artifacts-repo">qmd/corpus</strong>
+              </div>
+              <div style="background: rgba(0,0,0,0.2); padding: 8px 12px; border-radius: 6px;">
+                <span class="meta-desc" style="font-size: 0.75rem;">R2 Binary Store:</span>
+                <strong style="display: block; font-size: 0.85rem;" id="sync-r2-bucket">qmd-knowledgebase</strong>
+              </div>
+              <div style="background: rgba(0,0,0,0.2); padding: 8px 12px; border-radius: 6px;">
+                <span class="meta-desc" style="font-size: 0.75rem;">Cloud Sync Status:</span>
+                <span class="badge badge-green" id="sync-status-badge">Enabled</span>
+              </div>
+            </div>
+            
+            <h4 style="font-size: 0.9rem; margin: 0 0 8px 0; color: var(--text-muted); text-transform: uppercase;">Recent Version History & 1-Click Rollback</h4>
+            <div style="max-height: 180px; overflow-y: auto; border: 1px solid rgba(255,255,255,0.06); border-radius: 6px;">
+              <table style="width: 100%; border-collapse: collapse; font-size: 0.82rem;" id="sync-history-table">
+                <thead>
+                  <tr style="border-bottom: 1px solid rgba(255,255,255,0.08); text-align: left; color: var(--text-muted);">
+                    <th style="padding: 6px 10px;">Commit</th>
+                    <th style="padding: 6px 10px;">Message</th>
+                    <th style="padding: 6px 10px;">Date</th>
+                    <th style="padding: 6px 10px; text-align: right;">Action</th>
+                  </tr>
+                </thead>
+                <tbody id="sync-history-tbody">
+                  <tr><td colspan="4" style="padding: 10px; text-align: center; color: var(--text-muted);">Loading version history...</td></tr>
+                </tbody>
+              </table>
             </div>
           </div>
         </div>
@@ -181,6 +231,37 @@
             <h3>Health & Auth Tests</h3>
             <p>Runs automated live acceptance suite verifying QMD embeddings, OAuth proxy, and Cloudflare Pages.</p>
             <button class="btn btn-secondary btn-block" onclick="runAction('smoke')">Run Smoke Tests</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Section 2.5: Pi Agent Autonomous Intelligence Engine -->
+      <section class="section" id="section-pi-agent">
+        <div class="section-header">
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <h2>🥧 Pi Agent Autonomous Console</h2>
+            <span class="badge badge-purple" id="badge-pi-engine">earendil-works/pi</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <label style="font-size: 0.8rem; color: var(--text-muted);">Model:</label>
+            <select id="select-pi-model" style="background: rgba(0,0,0,0.4); color: var(--text); border: 1px solid rgba(255,255,255,0.15); border-radius: 4px; padding: 4px 8px; font-size: 0.85rem;">
+              <option value="local-gguf">local-gguf (Local llama.cpp)</option>
+              <option value="@cf/meta/llama-3.1-8b-instruct-fp8-fast">Workers AI (Llama 3.1 8B)</option>
+              <option value="claude-3-5-sonnet">Claude 3.5 Sonnet</option>
+              <option value="gpt-4o">GPT-4o</option>
+            </select>
+          </div>
+        </div>
+        <div class="card" style="border: 1px solid var(--accent); background: var(--bg-card);">
+          <div class="card-body" style="display: flex; flex-direction: column; gap: 12px;">
+            <div style="display: flex; gap: 8px;">
+              <input type="text" id="input-pi-prompt" placeholder="Ask a question, request research, or describe a multi-step task across your knowledgebase..." style="flex: 1; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.15); border-radius: 6px; padding: 8px 14px; color: var(--text); font-size: 0.92rem;">
+              <button class="btn btn-primary" id="btn-run-pi-goal" onclick="runPiGoal()">⚡ Execute Goal</button>
+            </div>
+            <div id="pi-progress-bar" style="display: none; height: 3px; background: linear-gradient(90deg, var(--primary), var(--accent)); border-radius: 2px;"></div>
+            <div style="background: rgba(0,0,0,0.35); border: 1px solid rgba(255,255,255,0.08); border-radius: 6px; padding: 12px; min-height: 120px; max-height: 350px; overflow-y: auto; font-family: monospace; font-size: 0.85rem;" id="pi-output-container">
+              <span style="color: var(--text-muted);">Pi Agent is idle. Enter a prompt above to trigger the ReAct autonomous loop.</span>
+            </div>
           </div>
         </div>
       </section>

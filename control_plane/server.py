@@ -545,6 +545,8 @@ def make_control_plane_handler(
     static_dir: Path,
     logger: Optional[SystemLogger] = None,
     scheduler: Optional[Any] = None,
+    pi_bridge_inst: Optional[Any] = None,
+    sync_manager_inst: Optional[Any] = None,
 ):
     system_logger = logger or SystemLogger(repo_root)
     runner = TaskRunner(repo_root, logger=system_logger)
@@ -556,6 +558,17 @@ def make_control_plane_handler(
         repo_root=repo_root,
         store=scheduler_store,
         logger_func=lambda level, msg: system_logger.log("SCHEDULER", msg, level=level),
+    )
+
+    from control_plane.pi_bridge import PiBridge
+    from sync.cloudflare_sync import CloudflareSyncManager
+
+    pi_bridge = pi_bridge_inst or PiBridge(repo_root=repo_root)
+    pi_bridge.start()
+    sync_manager = sync_manager_inst or CloudflareSyncManager()
+
+    pi_bridge.add_event_listener(
+        lambda evt: system_logger.log("PI_AGENT", f"[{evt.get('type')}] {evt.get('tool') or evt.get('content') or evt.get('sessionId') or ''}")
     )
 
     class Handler(SimpleHTTPRequestHandler):
@@ -618,6 +631,19 @@ def make_control_plane_handler(
                     "task": task_status,
                 }
                 self.send_json(200, data)
+                return
+
+            if path in ("/openapi.json", "/api/openapi.json"):
+                openapi_file = repo_root / "control_plane" / "openapi.json"
+                if openapi_file.exists():
+                    try:
+                        spec = json.loads(openapi_file.read_text(encoding="utf-8"))
+                        self.send_json(200, spec)
+                        return
+                    except Exception:
+                        pass
+                from gateways.bot_gateway import generate_openapi_schema
+                self.send_json(200, generate_openapi_schema())
                 return
 
             if path == "/api/config":
@@ -770,6 +796,61 @@ def make_control_plane_handler(
                 self.send_json(200, {
                     "local": {"available": True, "type": "subprocess"},
                     "cloud": {"configured": configured, "provider": provider},
+                })
+                return
+
+            if path == "/api/engine/operational-mode":
+                env_dict = read_env_dict(repo_root / ".env")
+                current_mode = env_dict.get("OPERATIONAL_MODE", "full").lower()
+                self.send_json(200, {
+                    "operational_mode": current_mode,
+                    "modes": [
+                        {
+                            "id": "offline-only",
+                            "name": "Offline Only",
+                            "description": "100% on-device. Local GGUF models via llama.cpp + local Pi ReAct + SQLite index. Zero network calls.",
+                        },
+                        {
+                            "id": "offline+cloudflare-wiki",
+                            "name": "Offline Search + Cloudflare Wiki",
+                            "description": "Local search and Pi agent execution, plus Cloudflare Workers AI for cross-silo wiki synthesis & topic hub compilation.",
+                        },
+                        {
+                            "id": "full",
+                            "name": "Full Cloud Connected",
+                            "description": "Everything enabled: Cloudflare Artifacts (Git versioning), Cloudflare R2 binary snapshots, and cloud models.",
+                        },
+                    ],
+                })
+                return
+
+            if path == "/api/sync/status":
+                status = sync_manager.get_status(corpus_dir=repo_root / "corpus")
+                self.send_json(200, status)
+                return
+
+            if path == "/api/sync/history":
+                limit = int(params.get("limit", [15])[0])
+                history = sync_manager.artifacts.get_history(repo_root / "corpus", limit=limit)
+                self.send_json(200, {"history": history, "count": len(history)})
+                return
+
+            if path == "/api/pi/status":
+                state_res = pi_bridge.get_state()
+                self.send_json(200, {
+                    "is_running": pi_bridge.is_running,
+                    "mode": pi_bridge.mode,
+                    "state": state_res.get("data", {}),
+                })
+                return
+
+            if path == "/api/pi/events":
+                since = int(params.get("since", [0])[0])
+                events = pi_bridge.get_events(since_id=since)
+                self.send_json(200, {
+                    "events": events,
+                    "last_id": events[-1]["id"] if events else since,
+                    "count": len(events),
                 })
                 return
 
@@ -1092,6 +1173,65 @@ def make_control_plane_handler(
                 from control_plane.sandbox import execute_action
                 res = execute_action(action=action, params=params_dict, tier=tier, timeout=timeout, repo_root=repo_root)
                 self.send_json(200, res.to_dict())
+                return
+
+            if path == "/api/engine/operational-mode":
+                try:
+                    payload = json.loads(body.decode("utf-8")) if body else {}
+                except Exception:
+                    self.send_json(400, {"error": "Invalid JSON"})
+                    return
+                mode = payload.get("mode", "").strip().lower()
+                if mode not in ("offline-only", "offline+cloudflare-wiki", "full"):
+                    self.send_json(400, {"error": "Invalid mode. Must be 'offline-only', 'offline+cloudflare-wiki', or 'full'"})
+                    return
+                write_env_dict(repo_root / ".env", {"OPERATIONAL_MODE": mode})
+                os.environ["OPERATIONAL_MODE"] = mode
+                system_logger.log("OPERATIONAL_MODE", f"Switched operational mode to '{mode}'")
+                self.send_json(200, {"status": "updated", "operational_mode": mode})
+                return
+
+            if path == "/api/sync/trigger":
+                try:
+                    payload = json.loads(body.decode("utf-8")) if body else {}
+                except Exception:
+                    payload = {}
+                commit_msg = payload.get("message", "Manual sync triggered from Control Plane")
+                system_logger.log("SYNC", f"Triggered Cloudflare sync: '{commit_msg}'")
+                res = sync_manager.sync_all(corpus_dir=repo_root / "corpus", commit_message=commit_msg)
+                self.send_json(200, res)
+                return
+
+            if path == "/api/sync/revert":
+                try:
+                    payload = json.loads(body.decode("utf-8")) if body else {}
+                except Exception:
+                    self.send_json(400, {"error": "Invalid JSON"})
+                    return
+                commit_hash = payload.get("commit", "").strip()
+                if not commit_hash:
+                    self.send_json(400, {"error": "Missing 'commit' hash in request body"})
+                    return
+                system_logger.log("SYNC", f"Reverting corpus to commit: {commit_hash}")
+                res = sync_manager.artifacts.revert_commit(repo_root / "corpus", commit_hash)
+                self.send_json(200, res)
+                return
+
+            if path == "/api/pi/goal":
+                try:
+                    payload = json.loads(body.decode("utf-8")) if body else {}
+                except Exception:
+                    self.send_json(400, {"error": "Invalid JSON"})
+                    return
+                prompt = payload.get("prompt", "").strip()
+                if not prompt:
+                    self.send_json(400, {"error": "Missing 'prompt' in request body"})
+                    return
+                session_id = payload.get("session_id")
+                model = payload.get("model")
+                system_logger.log("PI_AGENT", f"Autonomous goal received: '{prompt[:100]}'")
+                result = pi_bridge.execute_goal(prompt, session_id=session_id, model=model)
+                self.send_json(200, result)
                 return
 
             self.send_json(404, {"error": "Endpoint not found"})

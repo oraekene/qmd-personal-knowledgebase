@@ -1,0 +1,167 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "QMD Personal Knowledgebase & Autonomous Pi Engine API",
+    "description": "API allowing Custom GPTs, Claude, and external clients to search, retrieve, ingest, and execute autonomous tasks on personal knowledgebase.",
+    "version": "1.0.0"
+  },
+  "servers": [
+    {
+      "url": "https://kb.parmeterai.space"
+    }
+  ],
+  "paths": {
+    "/api/search": {
+      "get": {
+        "summary": "Search personal knowledgebase",
+        "operationId": "searchKnowledgebase",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Keywords or search phrase"
+          },
+          {
+            "name": "silo",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Optional silo filter (notes, wiki, github, chats, pdfs, web, twitter)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Search results list with snippets and filenames",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/pi/goal": {
+      "post": {
+        "summary": "Execute autonomous multi-step goal with Pi Agent",
+        "operationId": "executePiGoal",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string",
+                    "description": "Goal or question for Pi Agent"
+                  },
+                  "model": {
+                    "type": "string",
+                    "description": "Optional model override"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Completed response with executed tool calls",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/connectors/reach": {
+      "post": {
+        "summary": "Ingest web content or social media into knowledgebase",
+        "operationId": "ingestUrl",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "url": {
+                    "type": "string",
+                    "description": "URL to ingest"
+                  },
+                  "type": {
+                    "type": "string",
+                    "description": "Channel type (auto, youtube, twitter, web, etc)"
+                  }
+                },
+                "required": [
+                  "url"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Ingestion confirmation and saved path",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/sync/status": {
+      "get": {
+        "summary": "Check Cloudflare Artifacts and R2 sync status",
+        "operationId": "getSyncStatus",
+        "responses": {
+          "200": {
+            "description": "Status and recent commit history",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Bearer token authentication"
+      }
+    }
+  },
+  "security": [
+    {
+      "BearerAuth": []
+    }
+  ]
+}

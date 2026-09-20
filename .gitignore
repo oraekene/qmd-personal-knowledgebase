@@ -10,6 +10,7 @@ venv/
 *.egg-info/
 dist/
 build/
+node_modules/
 
 # QMD & Wiki Compiler State
 .qmd/

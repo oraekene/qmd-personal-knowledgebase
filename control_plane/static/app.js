@@ -9,6 +9,14 @@ document.addEventListener("DOMContentLoaded", () => {
   setInterval(fetchStatus, 3000);
   setupDropzone();
 
+  // Load 3-tier operational mode, Cloudflare sync, and Pi agent status
+  fetchOperationalMode();
+  setInterval(fetchOperationalMode, 5000);
+  fetchSyncStatus();
+  setInterval(fetchSyncStatus, 5000);
+  fetchPiStatus();
+  setInterval(fetchPiStatus, 5000);
+
   // Load and refresh automations & scheduled tasks
   fetchAutomations();
   setInterval(fetchAutomations, 5000);
@@ -910,5 +918,280 @@ async function deleteAutomation(id) {
     showToast(`Error: ${e}`, true);
   }
 }
+
+// ======================================================================
+// 3-Tier Operational Mode
+// ======================================================================
+
+async function fetchOperationalMode() {
+  try {
+    const res = await fetch("/api/engine/operational-mode");
+    if (!res.ok) return;
+    const data = await res.json();
+    const mode = data.operational_mode || "full";
+
+    const badge = document.getElementById("badge-operational-mode");
+    const desc = document.getElementById("desc-operational-mode");
+    const btnOffline = document.getElementById("btn-op-offline");
+    const btnWiki = document.getElementById("btn-op-wiki");
+    const btnFull = document.getElementById("btn-op-full");
+
+    if (btnOffline) btnOffline.className = mode === "offline-only" ? "btn btn-sm btn-primary" : "btn btn-sm btn-outline";
+    if (btnWiki) btnWiki.className = mode === "offline+cloudflare-wiki" ? "btn btn-sm btn-primary" : "btn btn-sm btn-outline";
+    if (btnFull) btnFull.className = mode === "full" ? "btn btn-sm btn-primary" : "btn btn-sm btn-outline";
+
+    if (badge) {
+      if (mode === "offline-only") {
+        badge.className = "badge badge-green";
+        badge.innerText = "🔒 Offline Only";
+        if (desc) desc.innerText = "100% on-device. Local GGUF models via llama.cpp + local Pi ReAct + SQLite index. Zero network calls.";
+      } else if (mode === "offline+cloudflare-wiki") {
+        badge.className = "badge badge-blue";
+        badge.innerText = "🧠 Offline + CF Wiki";
+        if (desc) desc.innerText = "Local search and Pi agent execution, plus Cloudflare Workers AI for cross-silo wiki synthesis & topic hub compilation.";
+      } else {
+        badge.className = "badge badge-yellow";
+        badge.innerText = "🌐 Full Cloud Connected";
+        if (desc) desc.innerText = "Everything enabled: Cloudflare Artifacts (Git versioning), Cloudflare R2 binary snapshots, and cloud models.";
+      }
+    }
+  } catch (e) {
+    console.warn("fetchOperationalMode error:", e);
+  }
+}
+
+async function switchOperationalMode(mode) {
+  try {
+    const res = await fetch("/api/engine/operational-mode", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode }),
+    });
+    const data = await res.json();
+    if (res.ok) {
+      showToast(`Operational mode switched to: ${mode}`);
+      fetchOperationalMode();
+      fetchSyncStatus();
+    } else {
+      showToast(data.error || "Mode switch failed", true);
+    }
+  } catch (e) {
+    showToast(`Error: ${e}`, true);
+  }
+}
+
+// ======================================================================
+// Cloudflare Artifacts (Git Versioning) & R2 Sync
+// ======================================================================
+
+async function fetchSyncStatus() {
+  try {
+    const res = await fetch("/api/sync/status");
+    if (!res.ok) return;
+    const data = await res.json();
+
+    const repoElem = document.getElementById("sync-artifacts-repo");
+    const bucketElem = document.getElementById("sync-r2-bucket");
+    const statusBadge = document.getElementById("sync-status-badge");
+
+    if (repoElem) repoElem.innerText = data.artifacts_repo || "qmd/corpus";
+    if (bucketElem) bucketElem.innerText = data.r2_bucket || "qmd-knowledgebase";
+    if (statusBadge) {
+      if (data.cloud_sync_enabled) {
+        statusBadge.className = "badge badge-green";
+        statusBadge.innerText = "Active";
+      } else {
+        statusBadge.className = "badge badge-gray";
+        statusBadge.innerText = "Blocked (Offline Mode)";
+      }
+    }
+
+    // Render history
+    const tbody = document.getElementById("sync-history-tbody");
+    if (tbody && data.recent_commits) {
+      if (data.recent_commits.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="4" style="padding: 10px; text-align: center; color: var(--text-muted);">No version history commits recorded yet.</td></tr>';
+      } else {
+        tbody.innerHTML = data.recent_commits.map(c => `
+          <tr style="border-bottom: 1px solid rgba(255,255,255,0.04);">
+            <td style="padding: 6px 10px; font-family: monospace; color: var(--accent);">${escapeHtml(c.commit ? c.commit.slice(0, 7) : 'head')}</td>
+            <td style="padding: 6px 10px;">${escapeHtml(c.message || '')}</td>
+            <td style="padding: 6px 10px; font-size: 0.75rem; color: var(--text-muted);">${escapeHtml(c.date ? c.date.slice(0, 19) : '')}</td>
+            <td style="padding: 6px 10px; text-align: right;">
+              <button class="btn btn-xs btn-outline" onclick="revertCommit('${c.commit}')">Rollback</button>
+            </td>
+          </tr>
+        `).join("");
+      }
+    }
+  } catch (e) {
+    console.warn("fetchSyncStatus error:", e);
+  }
+}
+
+async function triggerSync() {
+  const btn = document.getElementById("btn-trigger-sync");
+  if (btn) {
+    btn.disabled = true;
+    btn.innerText = "⏳ Syncing...";
+  }
+  try {
+    const res = await fetch("/api/sync/trigger", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "Manual 1-click sync from Web Control Plane" }),
+    });
+    const data = await res.json();
+    if (data.status === "blocked") {
+      showToast(`Sync blocked: ${data.message}`, true);
+    } else {
+      showToast("Sync completed successfully!");
+      fetchSyncStatus();
+    }
+  } catch (e) {
+    showToast(`Sync error: ${e}`, true);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerText = "☁️ 1-Click Sync";
+    }
+  }
+}
+
+async function revertCommit(commitHash) {
+  if (!confirm(`Revert knowledgebase corpus state back to commit ${commitHash.slice(0, 7)}?`)) return;
+  try {
+    const res = await fetch("/api/sync/revert", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ commit: commitHash }),
+    });
+    const data = await res.json();
+    if (res.ok && data.status === "reverted") {
+      showToast(`Successfully reverted to ${commitHash.slice(0, 7)}`);
+      fetchSyncStatus();
+    } else {
+      showToast(data.message || "Revert failed", true);
+    }
+  } catch (e) {
+    showToast(`Error: ${e}`, true);
+  }
+}
+
+// ======================================================================
+// Pi Agent Autonomous Execution Console
+// ======================================================================
+
+async function fetchPiStatus() {
+  try {
+    const res = await fetch("/api/pi/status");
+    if (!res.ok) return;
+    const data = await res.json();
+    const badge = document.getElementById("badge-pi-engine");
+    if (badge && data.is_running) {
+      badge.className = "badge badge-purple";
+      badge.innerText = `Pi Agent (${data.mode})`;
+    }
+  } catch (e) {
+    console.warn("fetchPiStatus error:", e);
+  }
+}
+
+let piEventPollTimer = null;
+let lastPiEventId = 0;
+
+async function pollPiEvents() {
+  try {
+    const res = await fetch(`/api/pi/events?since=${lastPiEventId}`);
+    if (!res.ok) return;
+    const data = await res.json();
+    if (data.events && data.events.length > 0) {
+      lastPiEventId = data.last_id;
+      const container = document.getElementById("pi-output-container");
+      if (!container) return;
+
+      data.events.forEach(evt => {
+        const div = document.createElement("div");
+        div.style.marginBottom = "4px";
+        if (evt.type === "thinking_delta") {
+          div.style.color = "var(--text-muted)";
+          div.innerHTML = `<em>🤔 [Pi Thought] ${escapeHtml(evt.content)}</em>`;
+        } else if (evt.type === "tool_start") {
+          div.style.color = "var(--primary)";
+          div.innerHTML = `<strong>⚡ [Tool Call: ${escapeHtml(evt.tool)}]</strong> <span style="font-size:0.8rem;">args: ${escapeHtml(JSON.stringify(evt.arguments || {}))}</span>`;
+        } else if (evt.type === "tool_end") {
+          div.style.color = evt.success ? "var(--success, #10b981)" : "var(--danger, #ef4444)";
+          div.innerHTML = `<span>↳ [Tool Result: ${evt.success ? 'Success' : 'Failed'}] ${escapeHtml(evt.preview || '')}</span>`;
+        } else if (evt.type === "message_delta") {
+          div.style.color = "var(--text)";
+          div.style.marginTop = "8px";
+          div.innerHTML = `<strong>💡 [Pi Response]:</strong><br><div style="white-space:pre-wrap; margin-top:4px;">${escapeHtml(evt.content)}</div>`;
+        }
+        if (div.innerHTML) {
+          container.appendChild(div);
+          container.scrollTop = container.scrollHeight;
+        }
+      });
+    }
+  } catch (e) {
+    console.warn("pollPiEvents error:", e);
+  }
+}
+
+async function runPiGoal() {
+  const input = document.getElementById("input-pi-prompt");
+  const modelSelect = document.getElementById("select-pi-model");
+  const btn = document.getElementById("btn-run-pi-goal");
+  const progressBar = document.getElementById("pi-progress-bar");
+  const container = document.getElementById("pi-output-container");
+
+  const prompt = (input ? input.value : "").trim();
+  if (!prompt) {
+    showToast("Please enter a goal or question for Pi Agent", true);
+    return;
+  }
+
+  const model = modelSelect ? modelSelect.value : "local-gguf";
+
+  if (btn) {
+    btn.disabled = true;
+    btn.innerText = "⏳ Executing...";
+  }
+  if (progressBar) progressBar.style.display = "block";
+  if (container) {
+    container.innerHTML = `<div style="color: var(--accent);">🚀 Launching goal: "${escapeHtml(prompt)}"...</div>`;
+  }
+
+  // Start polling events
+  if (piEventPollTimer) clearInterval(piEventPollTimer);
+  piEventPollTimer = setInterval(pollPiEvents, 300);
+
+  try {
+    const res = await fetch("/api/pi/goal", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt, model }),
+    });
+    const data = await res.json();
+    if (res.ok) {
+      showToast("Pi Agent completed goal!");
+    } else {
+      showToast(data.error || "Goal execution failed", true);
+    }
+  } catch (e) {
+    showToast(`Execution error: ${e}`, true);
+  } finally {
+    setTimeout(() => {
+      pollPiEvents();
+      if (piEventPollTimer) clearInterval(piEventPollTimer);
+      if (progressBar) progressBar.style.display = "none";
+      if (btn) {
+        btn.disabled = false;
+        btn.innerText = "⚡ Execute Goal";
+      }
+    }, 1000);
+  }
+}
+
 
 

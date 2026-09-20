@@ -8,10 +8,10 @@
       "params": {},
       "tier": "local",
       "enabled": true,
-      "last_run_at": null,
-      "last_status": "never",
-      "last_error": null,
-      "next_run_at": "2026-09-18T17:19:10.347288+00:00"
+      "last_run_at": "2026-09-18T16:49:33.852488+00:00",
+      "last_status": "failed",
+      "last_error": "Execution timed out after 300 seconds.",
+      "next_run_at": "2026-09-18T17:19:33.852488+00:00"
     },
     {
       "id": "job_github_sync",
