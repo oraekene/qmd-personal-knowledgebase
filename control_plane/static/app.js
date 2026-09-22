@@ -143,7 +143,7 @@ function updateBadge(id, isOk) {
 // Log Filter Switcher
 function setLogFilter(filter) {
   currentFilter = filter;
-  const buttons = ["filter-all", "filter-daemons", "filter-pipelines", "filter-errors"];
+  const buttons = ["filter-all", "filter-user-actions", "filter-daemons", "filter-pipelines", "filter-errors"];
   buttons.forEach(bId => {
     const btn = document.getElementById(bId);
     if (btn) btn.classList.remove("active");
@@ -151,6 +151,7 @@ function setLogFilter(filter) {
 
   const activeMap = {
     "ALL": "filter-all",
+    "USER_ACTION": "filter-user-actions",
     "DAEMONS": "filter-daemons",
     "PIPELINES": "filter-pipelines",
     "ERRORS": "filter-errors",
@@ -163,6 +164,7 @@ function setLogFilter(filter) {
 
 function getBadgeClassForSource(source) {
   const s = (source || "").toLowerCase();
+  if (s.includes("user_action") || s.includes("user")) return "badge-user_action";
   if (s.includes("qmd")) return "badge-qmd";
   if (s.includes("proxy") || s.includes("auth")) return "badge-auth_proxy";
   if (s.includes("tunnel")) return "badge-tunnel";
@@ -181,6 +183,9 @@ function renderLogs() {
     const lvl = (entry.level || "").toUpperCase();
     const msg = (entry.message || "").toLowerCase();
 
+    if (currentFilter === "USER_ACTION") {
+      return src === "USER_ACTION";
+    }
     if (currentFilter === "DAEMONS") {
       return ["QMD", "AUTH_PROXY", "TUNNEL", "SUPERVISOR"].includes(src);
     }
@@ -212,7 +217,8 @@ function renderLogs() {
     const div = document.createElement("div");
     const isErr = entry.level === "ERROR" || (entry.message && entry.message.toLowerCase().includes("error:"));
     const isWarn = entry.level === "WARNING";
-    div.className = `terminal-entry ${isErr ? "entry-error" : isWarn ? "entry-warning" : ""}`;
+    const isAudit = (entry.source || "").toUpperCase() === "USER_ACTION";
+    div.className = `terminal-entry ${isErr ? "entry-error" : isWarn ? "entry-warning" : isAudit ? "entry-audit" : ""}`;
 
     const timeStr = (entry.time || "").split(" ")[1] || entry.time || "";
     const badgeClass = getBadgeClassForSource(entry.source);
@@ -224,7 +230,8 @@ function renderLogs() {
     } else if (isWarn) {
       html += `<span class="log-chip badge-warning">WARN</span>`;
     }
-    html += `<span class="log-msg">${escapeHtml(entry.message || entry.raw || "")}</span>`;
+    html += `<span class="log-msg" style="white-space: pre-wrap;">${escapeHtml(entry.message || entry.raw || "")}</span>`;
+
 
     div.innerHTML = html;
     fragment.appendChild(div);
@@ -361,11 +368,13 @@ async function executeSearch() {
   const silo = siloEl ? siloEl.value.trim() : "all";
   const filterInput = document.getElementById("search-filter");
   const filterVal = filterInput ? filterInput.value.trim() : "";
+  const synthCheck = document.getElementById("search-synthesize");
+  const synthesize = synthCheck ? synthCheck.checked : false;
   if (!q) return;
 
   const btn = document.getElementById("btn-search");
   btn.disabled = true;
-  btn.innerText = "Searching...";
+  btn.innerText = synthesize ? "Synthesizing..." : "Searching...";
 
   try {
     let url = `/api/search?q=${encodeURIComponent(q)}`;
@@ -375,16 +384,30 @@ async function executeSearch() {
     if (filterVal) {
       url += `&filter=${encodeURIComponent(filterVal)}`;
     }
+    if (synthesize) {
+      url += `&synthesize=true`;
+    }
     const res = await fetch(url);
     const data = await res.json();
     const box = document.getElementById("search-results-box");
     const pre = document.getElementById("search-raw-output");
+    const synthBox = document.getElementById("search-synthesis-container");
+    const synthOut = document.getElementById("search-synthesis-output");
 
     box.style.display = "block";
     if (res.ok) {
       pre.textContent = data.output || "No matches found.";
+      if (synthBox && synthOut) {
+        if (data.synthesis) {
+          synthBox.style.display = "block";
+          synthOut.textContent = data.synthesis;
+        } else {
+          synthBox.style.display = "none";
+        }
+      }
     } else {
       pre.textContent = `Error: ${data.error}`;
+      if (synthBox) synthBox.style.display = "none";
     }
   } catch (e) {
     showToast(`Search error: ${e}`, true);
@@ -393,6 +416,7 @@ async function executeSearch() {
     btn.innerText = "Search QMD";
   }
 }
+
 
 // Drag and Drop Uploads
 function setupDropzone() {
@@ -488,8 +512,12 @@ async function saveSettings() {
 
   const fields = [
     "AUTH_PROXY_TOKEN", "TUNNEL_URL", "TUNNEL_TOKEN", "GITHUB_TOKEN",
-    "CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID", "MIRROR_TOKEN", "MIRROR_HOST"
+    "CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID", "MIRROR_TOKEN", "MIRROR_HOST",
+    "TELEGRAM_BOT_TOKEN", "DISCORD_BOT_TOKEN", "R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID",
+    "R2_SECRET_ACCESS_KEY", "R2_BUCKET_NAME", "TWITTER_BEARER_TOKEN", "MODAL_TOKEN_ID",
+    "MODAL_TOKEN_SECRET", "E2B_API_KEY"
   ];
+
 
   const updates = {};
   fields.forEach(f => {
@@ -544,7 +572,10 @@ async function openPrompts() {
       card.innerHTML = `
         <div style="display:flex; justify-content:space-between; align-items:center;">
           <strong style="color:var(--accent); font-family:monospace; font-size:0.95rem;">${escapeHtml(tpl.name)}</strong>
-          <span class="badge badge-gray" style="font-size:10px;">MCP Prompt</span>
+          <div style="display:flex; gap:6px; align-items:center;">
+            <button type="button" class="btn btn-xs btn-outline" onclick="runPromptInPi('${escapeHtml(tpl.name)}')">⚡ Run in Pi Agent</button>
+            <span class="badge badge-gray" style="font-size:10px;">MCP Prompt</span>
+          </div>
         </div>
         <p style="margin:4px 0 6px 0; font-size:0.82rem; color:var(--text);">${escapeHtml(tpl.description)}</p>
         <div style="font-size:0.75rem; color:var(--text-muted); font-family:monospace;">
@@ -571,7 +602,10 @@ async function openPrompts() {
           item.innerHTML = `
             <div style="display:flex; justify-content:space-between; align-items:center;">
               <strong style="color:var(--primary); font-family:monospace; font-size:0.9rem;">🧩 ${escapeHtml(s.name)}</strong>
-              <span class="badge badge-green" style="font-size:10px;">Tier 1 Active</span>
+              <div style="display:flex; gap:6px; align-items:center;">
+                <button type="button" class="btn btn-xs btn-outline" onclick="runSkillInPi('${escapeHtml(s.name)}')">⚡ Activate in Pi</button>
+                <span class="badge badge-green" style="font-size:10px;">Tier 1 Active</span>
+              </div>
             </div>
             <p style="margin:4px 0 0 0; font-size:0.8rem; color:var(--text);">${escapeHtml(s.description)}</p>
           `;
@@ -611,6 +645,140 @@ async function openPrompts() {
     showToast(`Error loading prompts: ${e}`, true);
   }
 }
+
+function runPromptInPi(promptName) {
+  closePrompts();
+  const input = document.getElementById("input-pi-prompt");
+  if (input) {
+    input.value = `Execute MCP prompt template '${promptName}' across my knowledgebase.`;
+    input.focus();
+  }
+}
+
+function runSkillInPi(skillName) {
+  closePrompts();
+  const input = document.getElementById("input-pi-prompt");
+  if (input) {
+    input.value = `Activate skill '${skillName}' and follow its instructions to inspect my knowledgebase.`;
+    input.focus();
+  }
+}
+
+function toggleAddPromptForm() {
+  const f = document.getElementById("add-prompt-form");
+  if (f) f.style.display = f.style.display === "none" ? "block" : "none";
+}
+
+async function submitNewPromptTemplate() {
+  const name = document.getElementById("new-prompt-name").value.trim();
+  const desc = document.getElementById("new-prompt-desc").value.trim();
+  const argsRaw = document.getElementById("new-prompt-args").value.trim();
+  const content = document.getElementById("new-prompt-content").value.trim();
+
+  if (!name || !content) {
+    showToast("Template Name and Content are required", true);
+    return;
+  }
+
+  const argsList = argsRaw ? argsRaw.split(",").map(a => ({ name: a.trim(), description: a.trim(), required: true })) : [];
+
+  try {
+    const res = await fetch("/api/prompts/templates", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, description: desc, arguments: argsList, content })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      showToast(`Prompt template '${name}' created!`);
+      toggleAddPromptForm();
+      openPrompts();
+    } else {
+      showToast(data.error || "Failed to create prompt template", true);
+    }
+  } catch (e) {
+    showToast(`Error: ${e}`, true);
+  }
+}
+
+function toggleAddSkillForm() {
+  const f = document.getElementById("add-skill-form");
+  if (f) f.style.display = f.style.display === "none" ? "block" : "none";
+}
+
+async function submitNewSkill() {
+  const name = document.getElementById("new-skill-name").value.trim();
+  const desc = document.getElementById("new-skill-desc").value.trim();
+  const content = document.getElementById("new-skill-content").value.trim();
+
+  if (!name || !content) {
+    showToast("Skill Name and Content are required", true);
+    return;
+  }
+
+  try {
+    const res = await fetch("/api/skills", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, description: desc, content })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      showToast(`Skill '${name}' created successfully!`);
+      toggleAddSkillForm();
+      openPrompts();
+    } else {
+      showToast(data.error || "Failed to create skill", true);
+    }
+  } catch (e) {
+    showToast(`Error: ${e}`, true);
+  }
+}
+
+function toggleAddToolForm() {
+  const f = document.getElementById("add-tool-form");
+  if (f) f.style.display = f.style.display === "none" ? "block" : "none";
+}
+
+async function submitNewTool() {
+  const name = document.getElementById("new-tool-name").value.trim();
+  const desc = document.getElementById("new-tool-desc").value.trim();
+  const schemaRaw = document.getElementById("new-tool-schema").value.trim();
+
+  if (!name) {
+    showToast("Tool Name is required", true);
+    return;
+  }
+
+  let schema = { type: "object", properties: {} };
+  if (schemaRaw) {
+    try {
+      schema = JSON.parse(schemaRaw);
+    } catch (e) {
+      showToast("Invalid JSON schema syntax", true);
+      return;
+    }
+  }
+
+  try {
+    const res = await fetch("/api/tools", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, description: desc, inputSchema: schema })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      showToast(`Tool '${name}' registered successfully!`);
+      toggleAddToolForm();
+      openPrompts();
+    } else {
+      showToast(data.error || "Failed to register tool", true);
+    }
+  } catch (e) {
+    showToast(`Error: ${e}`, true);
+  }
+}
+
 
 function closePrompts() {
   document.getElementById("prompts-modal").style.display = "none";

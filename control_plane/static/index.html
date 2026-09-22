@@ -286,10 +286,12 @@
         <div class="log-filters-bar">
           <span style="font-size: 0.8rem; color: var(--text-muted); font-weight: 600; text-transform: uppercase;">Filter:</span>
           <button class="btn btn-xs btn-filter active" id="filter-all" onclick="setLogFilter('ALL')">All Activity</button>
+          <button class="btn btn-xs btn-filter" id="filter-user-actions" onclick="setLogFilter('USER_ACTION')">👤 User Actions & Audit</button>
           <button class="btn btn-xs btn-filter" id="filter-daemons" onclick="setLogFilter('DAEMONS')">Daemons (QMD / Proxy / Tunnel)</button>
           <button class="btn btn-xs btn-filter" id="filter-pipelines" onclick="setLogFilter('PIPELINES')">Pipelines & Sync</button>
           <button class="btn btn-xs btn-filter" id="filter-errors" onclick="setLogFilter('ERRORS')">⚠️ Errors Only</button>
           <span id="log-count-indicator" style="margin-left: auto; font-size: 0.8rem; color: var(--text-muted); font-family: monospace;">0 entries</span>
+
         </div>
         <div class="terminal-window" id="terminal">
           <div class="terminal-line text-muted">[System] Control Plane ready. Output from all daemons, pipelines, and requests will stream here live.</div>
@@ -386,6 +388,9 @@
           <span class="subtitle-hint">Query your local knowledgebase directly to verify retrieval</span>
         </div>
         <div class="card search-card">
+          <div style="font-size: 0.82rem; color: var(--text-muted); margin-bottom: 12px; padding: 10px 14px; background: rgba(0,0,0,0.25); border-radius: 6px; border-left: 3px solid var(--accent); line-height: 1.5;">
+            <strong>Direct Retrieval vs. Autonomous Reasoning:</strong> The Search Tester performs raw, sub-second BM25/Vector retrieval directly against QMD chunk stores. For full multi-step research, memory-backed workflows, and tool execution, use the <strong>Pi Agent Autonomous Console</strong> above, or enable <strong>✨ Synthesize Answer</strong> below.
+          </div>
           <form id="search-form" onsubmit="event.preventDefault(); executeSearch();">
             <div class="search-input-group" style="display: flex; gap: 8px;">
               <select id="search-silo" class="input-text" style="max-width: 170px; background: var(--bg-card); cursor: pointer; color: var(--text);">
@@ -401,16 +406,24 @@
               <input type="text" id="search-query" placeholder="e.g. OCR selection rationale, solar sizing algorithm, prompt injection..." class="input-text" style="flex: 1;">
               <button type="submit" class="btn btn-primary" id="btn-search">Search QMD</button>
             </div>
-            <div style="margin-top: 8px;">
-              <input type="text" id="search-filter" placeholder='Optional Metadata Filter JSON AST e.g. {"key":"silo","operator":"eq","value":"github"}' class="input-text" style="font-size: 0.85rem; font-family: monospace;">
+            <div style="margin-top: 8px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap;">
+              <input type="text" id="search-filter" placeholder='Optional Metadata Filter JSON AST e.g. {"key":"silo","operator":"eq","value":"github"}' class="input-text" style="flex: 1; min-width: 250px; font-size: 0.85rem; font-family: monospace;">
+              <label class="checkbox-label" style="cursor: pointer; user-select: none;">
+                <input type="checkbox" id="search-synthesize"> ✨ Synthesize Grounded Answer (Pi / Model)
+              </label>
             </div>
           </form>
-          <div id="search-results-box" class="search-results-box" style="display:none;">
-            <h4>Search Output:</h4>
+          <div id="search-results-box" class="search-results-box" style="display:none; margin-top: 14px;">
+            <div id="search-synthesis-container" style="display:none; margin-bottom: 14px; padding: 14px; background: rgba(99, 102, 241, 0.1); border: 1px solid rgba(99, 102, 241, 0.3); border-radius: 6px;">
+              <h4 style="margin: 0 0 6px 0; color: var(--accent); font-size: 0.95rem;">✨ Synthesized Answer:</h4>
+              <div id="search-synthesis-output" style="font-size: 0.9rem; line-height: 1.6; white-space: pre-wrap;"></div>
+            </div>
+            <h4>Raw Document Chunks Retrieved:</h4>
             <pre id="search-raw-output" class="code-block"></pre>
           </div>
         </div>
       </section>
+
 
       <!-- Section 6: Automations, Crons & Background Sandboxes -->
       <section class="section" id="section-automations">
@@ -430,12 +443,14 @@
                 <label style="display: block; font-size: 0.8rem; font-weight: 600; margin-bottom: 4px; color: var(--text-muted);">Pipeline Action</label>
                 <select id="auto-action" class="input-text" style="width: 100%; background: var(--bg-card); color: var(--text);" onchange="onAutoActionChange()">
                   <option value="ingest_inbox">📥 Ingest Inbox (Chats, Notes, PDFs)</option>
+                  <option value="cloudflare_sync">☁️ Cloudflare Artifacts & R2 Sync</option>
                   <option value="github_sync">🐙 GitHub Tracking Repos Sync</option>
                   <option value="reindex">🔍 Re-index Vector & BM25 Store</option>
                   <option value="deploy_mirror">🌐 Deploy Cloudflare Static Mirror</option>
                   <option value="compile_wiki">🧠 Workers AI Wiki Hub Synthesis</option>
                   <option value="reach_ingest">⚡ Agent-Reach URL Ingestion</option>
                 </select>
+
               </div>
 
               <div>
@@ -555,6 +570,67 @@
               <input type="text" id="cfg-MIRROR_HOST" class="input-text">
             </div>
 
+            <div style="margin: 16px 0 10px 0; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 10px;">
+              <span style="font-size: 0.8rem; font-weight: 700; color: var(--accent); text-transform: uppercase;">🤖 Bot Gateways (Feature 7)</span>
+            </div>
+
+            <div class="form-group">
+              <label>TELEGRAM_BOT_TOKEN</label>
+              <input type="password" id="cfg-TELEGRAM_BOT_TOKEN" class="input-text" placeholder="123456:ABC-DEF...">
+            </div>
+
+            <div class="form-group">
+              <label>DISCORD_BOT_TOKEN</label>
+              <input type="password" id="cfg-DISCORD_BOT_TOKEN" class="input-text">
+            </div>
+
+            <div style="margin: 16px 0 10px 0; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 10px;">
+              <span style="font-size: 0.8rem; font-weight: 700; color: var(--accent); text-transform: uppercase;">☁️ Cloudflare R2 Object Storage (Feature 7)</span>
+            </div>
+
+            <div class="form-group">
+              <label>R2_ACCOUNT_ID</label>
+              <input type="text" id="cfg-R2_ACCOUNT_ID" class="input-text">
+            </div>
+
+            <div class="form-group">
+              <label>R2_ACCESS_KEY_ID</label>
+              <input type="password" id="cfg-R2_ACCESS_KEY_ID" class="input-text">
+            </div>
+
+            <div class="form-group">
+              <label>R2_SECRET_ACCESS_KEY</label>
+              <input type="password" id="cfg-R2_SECRET_ACCESS_KEY" class="input-text">
+            </div>
+
+            <div class="form-group">
+              <label>R2_BUCKET_NAME</label>
+              <input type="text" id="cfg-R2_BUCKET_NAME" class="input-text" placeholder="qmd-knowledgebase">
+            </div>
+
+            <div style="margin: 16px 0 10px 0; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 10px;">
+              <span style="font-size: 0.8rem; font-weight: 700; color: var(--accent); text-transform: uppercase;">🌐 External Integrations & Cloud Sandboxes</span>
+            </div>
+
+            <div class="form-group">
+              <label>TWITTER_BEARER_TOKEN (Agent-Reach)</label>
+              <input type="password" id="cfg-TWITTER_BEARER_TOKEN" class="input-text">
+            </div>
+
+            <div class="form-group">
+              <label>MODAL_TOKEN_ID & SECRET</label>
+              <div style="display: flex; gap: 8px;">
+                <input type="text" id="cfg-MODAL_TOKEN_ID" class="input-text" placeholder="Token ID" style="flex:1;">
+                <input type="password" id="cfg-MODAL_TOKEN_SECRET" class="input-text" placeholder="Token Secret" style="flex:1;">
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label>E2B_API_KEY (Cloud MicroVM)</label>
+              <input type="password" id="cfg-E2B_API_KEY" class="input-text">
+            </div>
+
+
             <div class="form-actions">
               <button type="button" class="btn btn-secondary" onclick="closeSettings()">Cancel</button>
               <button type="submit" class="btn btn-primary" id="btn-save-settings">Save Configurations</button>
@@ -615,24 +691,96 @@
 
             <!-- Tab 4: Prompt Templates -->
             <div id="tab-content-templates" class="prompt-tab-panel" style="display: none;">
-              <label style="display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 6px;">
-                Available MCP Prompt Templates (prompts/list)
-              </label>
+              <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 12px; padding: 10px 12px; background: rgba(99, 102, 241, 0.1); border-left: 3px solid var(--primary); border-radius: 6px; line-height: 1.5;">
+                <strong>Where MCP Prompt Templates are Executed:</strong> Advertised via standard <code>prompts/list</code> to thin and autonomous clients (Claude Desktop, Claude.ai over MCP, Telegram, Pi Agent). AI models select and fill parameters, executing them via <code>prompts/get</code>. You can also test or run any prompt directly in the Pi Agent Console or Interactive Search Tester!
+              </div>
+
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                <label style="font-size: 0.85rem; font-weight: 600; margin: 0;">
+                  Available MCP Prompt Templates
+                </label>
+                <button type="button" class="btn btn-xs btn-outline" onclick="toggleAddPromptForm()">➕ Add Prompt Template</button>
+              </div>
+
+              <!-- Add Prompt Form (Collapsed by default) -->
+              <div id="add-prompt-form" style="display: none; background: rgba(0,0,0,0.3); border: 1px solid var(--border); border-radius: 6px; padding: 12px; margin-bottom: 12px;">
+                <h4 style="margin: 0 0 8px 0; font-size: 0.85rem; color: var(--accent);">Create New Prompt Template</h4>
+                <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+                  <input type="text" id="new-prompt-name" placeholder="Template Name (e.g. code-audit)" class="input-text" style="flex: 1;">
+                  <input type="text" id="new-prompt-desc" placeholder="Brief Description" class="input-text" style="flex: 2;">
+                </div>
+                <div style="margin-bottom: 8px;">
+                  <input type="text" id="new-prompt-args" placeholder="Arguments comma-separated (e.g. repo, language)" class="input-text" style="width: 100%;">
+                </div>
+                <div style="margin-bottom: 8px;">
+                  <textarea id="new-prompt-content" placeholder="Prompt template text with placeholders like {repo}, {language}..." class="input-text" style="width: 100%; height: 90px; font-family: monospace; font-size: 0.82rem;"></textarea>
+                </div>
+                <div style="display: flex; gap: 8px; justify-content: flex-end;">
+                  <button type="button" class="btn btn-xs btn-secondary" onclick="toggleAddPromptForm()">Cancel</button>
+                  <button type="button" class="btn btn-xs btn-primary" onclick="submitNewPromptTemplate()">Save Template</button>
+                </div>
+              </div>
+
               <div id="prompt-templates-list" style="display: flex; flex-direction: column; gap: 8px;"></div>
             </div>
 
             <!-- Tab 5: Skills & Progressive Tools -->
             <div id="tab-content-skills" class="prompt-tab-panel" style="display: none;">
-              <label style="display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 6px;">
-                Specialized Skills Catalog (Hermes 3-Tier Progressive Disclosure)
-              </label>
+              <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 12px; padding: 10px 12px; background: rgba(16, 185, 129, 0.1); border-left: 3px solid var(--success); border-radius: 6px; line-height: 1.5;">
+                <strong>Where Skills & Tools are Executed:</strong> Under the Hermes 3-tier progressive disclosure model, AI assistants discover skills via <code>skills_list</code> (<200 tokens total catalog), load full instructions on-demand via <code>skill_view</code>, and invoke actions via dynamic bridge <code>tool_call</code>. You can run them right in the Pi Agent Autonomous Console above!
+              </div>
+
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                <label style="font-size: 0.85rem; font-weight: 600; margin: 0;">
+                  Specialized Skills Catalog (Tier 2)
+                </label>
+                <button type="button" class="btn btn-xs btn-outline" onclick="toggleAddSkillForm()">➕ Create Skill</button>
+              </div>
+
+              <!-- Create Skill Form (Collapsed by default) -->
+              <div id="add-skill-form" style="display: none; background: rgba(0,0,0,0.3); border: 1px solid var(--border); border-radius: 6px; padding: 12px; margin-bottom: 12px;">
+                <h4 style="margin: 0 0 8px 0; font-size: 0.85rem; color: var(--success);">Create New Specialized Skill</h4>
+                <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+                  <input type="text" id="new-skill-name" placeholder="Skill Name (e.g. security-audit)" class="input-text" style="flex: 1;">
+                  <input type="text" id="new-skill-desc" placeholder="One-line summary for compact catalog (<140 chars)" class="input-text" style="flex: 2;">
+                </div>
+                <div style="margin-bottom: 8px;">
+                  <textarea id="new-skill-content" placeholder="Full operational instructions (Markdown body of SKILL.md)..." class="input-text" style="width: 100%; height: 110px; font-family: monospace; font-size: 0.82rem;"></textarea>
+                </div>
+                <div style="display: flex; gap: 8px; justify-content: flex-end;">
+                  <button type="button" class="btn btn-xs btn-secondary" onclick="toggleAddSkillForm()">Cancel</button>
+                  <button type="button" class="btn btn-xs btn-primary" onclick="submitNewSkill()">Save Skill</button>
+                </div>
+              </div>
+
               <div id="skills-catalog-list" style="display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px;"></div>
 
-              <label style="display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 6px;">
-                Dynamic Bridge Tools (tool_search / tool_describe / tool_call)
-              </label>
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                <label style="font-size: 0.85rem; font-weight: 600; margin: 0;">
+                  Dynamic Bridge Tools (Tier 3)
+                </label>
+                <button type="button" class="btn btn-xs btn-outline" onclick="toggleAddToolForm()">➕ Register Tool</button>
+              </div>
+
+              <!-- Register Tool Form (Collapsed by default) -->
+              <div id="add-tool-form" style="display: none; background: rgba(0,0,0,0.3); border: 1px solid var(--border); border-radius: 6px; padding: 12px; margin-bottom: 12px;">
+                <h4 style="margin: 0 0 8px 0; font-size: 0.85rem; color: var(--accent);">Register Dynamic Bridge Tool</h4>
+                <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+                  <input type="text" id="new-tool-name" placeholder="Tool Name (e.g. weather_lookup)" class="input-text" style="flex: 1;">
+                  <input type="text" id="new-tool-desc" placeholder="Tool Description" class="input-text" style="flex: 2;">
+                </div>
+                <div style="margin-bottom: 8px;">
+                  <textarea id="new-tool-schema" placeholder='Input JSON Schema e.g. {"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}' class="input-text" style="width: 100%; height: 75px; font-family: monospace; font-size: 0.82rem;"></textarea>
+                </div>
+                <div style="display: flex; gap: 8px; justify-content: flex-end;">
+                  <button type="button" class="btn btn-xs btn-secondary" onclick="toggleAddToolForm()">Cancel</button>
+                  <button type="button" class="btn btn-xs btn-primary" onclick="submitNewTool()">Register Tool</button>
+                </div>
+              </div>
+
               <div id="progressive-tools-list" style="display: flex; flex-direction: column; gap: 8px;"></div>
             </div>
+
 
             <div class="form-actions" style="margin-top: 16px;">
               <button type="button" class="btn btn-secondary" onclick="closePrompts()">Cancel</button>

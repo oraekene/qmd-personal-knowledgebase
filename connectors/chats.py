@@ -92,64 +92,104 @@ class ChatsConnector(SourcePlugin):
             since = since.replace(tzinfo=timezone.utc)
 
         count = 0
-        for zip_path in sorted(self.inbox_dir.glob("*.zip")):
+        candidate_zips = set(self.inbox_dir.glob("*.zip"))
+        if (self.inbox_dir / "chats").exists():
+            candidate_zips.update((self.inbox_dir / "chats").glob("*.zip"))
+
+        for zip_path in sorted(candidate_zips):
             if count >= limit:
                 break
             zip_platform = _platform_from_zip_name(zip_path.name)
             try:
                 with zipfile.ZipFile(zip_path, "r") as zf:
                     for info in zf.infolist():
-                        if info.is_dir():
-                            continue
-                        if not info.filename.lower().endswith(".json"):
+                        if info.is_dir() or not info.filename.lower().endswith(".json"):
                             continue
                         if count >= limit:
                             break
                         try:
-                            data = zf.read(info.filename)
-                            sess = json.loads(data.decode("utf-8"))
+                            raw_bytes = zf.read(info.filename)
+                            parsed_data = json.loads(raw_bytes.decode("utf-8", errors="ignore"))
                         except Exception:
                             continue
-                        sess_id = sess.get("id")
-                        if not sess_id:
-                            continue
-                        platform = sess.get("platform") or zip_platform
-                        if not platform:
-                            continue
-                        platform = platform.lower()
-                        if platform not in SUPPORTED_PLATFORMS:
-                            # Skip unknown platforms instead of misattributing to claude
-                            continue
-                        created_at_str = sess.get("created_at") or "2026-09-01T00:00:00+00:00"
-                        try:
-                            created_at = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
-                            if created_at.tzinfo is None:
-                                created_at = created_at.replace(tzinfo=timezone.utc)
-                        except Exception:
-                            created_at = datetime.now(timezone.utc)
-                        if created_at <= since:
-                            continue
-                        messages = sess.get("messages") or []
-                        if not messages:
-                            continue
-                        summary = _summary_from_messages(messages)
-                        title = _title_from_messages(messages, sess_id)
-                        body_markdown = _body_from_messages(messages, title)
 
-                        payload = UnitPayload(
-                            source=self.NAME,
-                            silo=f"chats/{platform}",
-                            source_id=sess_id,
-                            url="",
-                            created_at=created_at.isoformat(),
-                            tags=[platform],
-                            author="",
-                            title=title,
-                            summary=summary,
-                            body_markdown=body_markdown,
-                        )
-                        count += 1
-                        yield payload
+                        # Handle both single session dict and array of sessions (Claude conversations.json)
+                        sessions_list = parsed_data if isinstance(parsed_data, list) else [parsed_data]
+
+                        for sess in sessions_list:
+                            if not isinstance(sess, dict) or count >= limit:
+                                break
+                            sess_id = sess.get("uuid") or sess.get("id")
+                            if not sess_id:
+                                continue
+                            raw_plat = sess.get("platform")
+                            if raw_plat:
+                                platform = str(raw_plat).lower()
+                            elif zip_platform:
+                                platform = zip_platform.lower()
+                            else:
+                                platform = "claude"
+                            if platform not in SUPPORTED_PLATFORMS:
+                                continue
+
+                            created_at_str = sess.get("created_at") or sess.get("create_time") or "2026-09-01T00:00:00+00:00"
+                            try:
+                                if isinstance(created_at_str, (int, float)):
+                                    created_at = datetime.fromtimestamp(created_at_str, tz=timezone.utc)
+                                else:
+                                    created_at = datetime.fromisoformat(str(created_at_str).replace("Z", "+00:00"))
+                                if created_at.tzinfo is None:
+                                    created_at = created_at.replace(tzinfo=timezone.utc)
+                            except Exception:
+                                created_at = datetime.now(timezone.utc)
+
+                            if created_at <= since:
+                                continue
+
+                            # Normalize messages
+                            messages = []
+                            if "chat_messages" in sess and isinstance(sess["chat_messages"], list):
+                                # Claude export format
+                                for m in sess["chat_messages"]:
+                                    sender = m.get("sender", "human")
+                                    role = "user" if sender == "human" else "assistant"
+                                    text = m.get("text") or ""
+                                    if text:
+                                        messages.append({"role": role, "content": text})
+                            elif "messages" in sess and isinstance(sess["messages"], list):
+                                messages = sess["messages"]
+                            elif "mapping" in sess and isinstance(sess["mapping"], dict):
+                                # ChatGPT export format
+                                for node in sess["mapping"].values():
+                                    msg = node.get("message")
+                                    if msg and msg.get("content", {}).get("parts"):
+                                        author_role = msg.get("author", {}).get("role", "user")
+                                        content_parts = msg["content"]["parts"]
+                                        text = "".join(str(p) for p in content_parts if isinstance(p, str))
+                                        if text:
+                                            messages.append({"role": author_role, "content": text})
+
+                            if not messages:
+                                continue
+
+                            summary = _summary_from_messages(messages)
+                            title = sess.get("name") or _title_from_messages(messages, sess_id)
+                            body_markdown = _body_from_messages(messages, title)
+
+                            payload = UnitPayload(
+                                source=self.NAME,
+                                silo=f"chats/{platform}",
+                                source_id=str(sess_id),
+                                url="",
+                                created_at=created_at.isoformat(),
+                                tags=[platform],
+                                author="",
+                                title=title,
+                                summary=summary,
+                                body_markdown=body_markdown,
+                            )
+                            count += 1
+                            yield payload
             except zipfile.BadZipFile:
                 continue
             except Exception:

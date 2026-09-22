@@ -44,6 +44,7 @@ class GithubConnector(SourcePlugin):
     and orchestrator dedupes via dedupe_by_source_id.
     """
 
+
     NAME = "github"
     DESCRIPTION = "GitHub owned/forked/starred repos"
     REQUIRES_AUTH = True
@@ -91,3 +92,8 @@ class GithubConnector(SourcePlugin):
     def fetch_batch(self, cursor, batch_size: int = 50):
         # Lookback not needed for #14 GitHub six-hourly forward scan, but support for completeness
         return [], None
+
+
+# Alias for backward-compatible imports
+GitHubConnector = GithubConnector
+

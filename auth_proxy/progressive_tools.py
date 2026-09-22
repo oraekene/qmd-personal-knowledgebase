@@ -241,6 +241,20 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
 }
 
 
+def _load_persisted_tools(repo_root: Path | None = None) -> None:
+    root = Path(repo_root) if repo_root else REPO_ROOT
+    tools_file = root / "tools.json"
+    if tools_file.exists():
+        try:
+            persisted = json.loads(tools_file.read_text(encoding="utf-8"))
+            if isinstance(persisted, dict):
+                TOOL_REGISTRY.update(persisted)
+        except Exception:
+            pass
+
+_load_persisted_tools()
+
+
 def search_tools(query: str, repo_root: Path | None = None) -> List[Dict[str, str]]:
     """Tier 3: Find relevant tools by keyword matching name, description, or tags."""
     words = [w.lower().strip() for w in re.split(r"\W+", query) if w.strip()]
@@ -420,3 +434,51 @@ def handle_progressive_tool_call(
             "content": [{"type": "text", "text": f"Error executing tool '{tool_name}': {e}"}],
             "isError": True,
         }
+
+
+def create_skill(name: str, description: str, content: str, skills_dir: Path | None = None) -> Dict[str, Any]:
+    """Create a new skill folder with SKILL.md and YAML frontmatter."""
+    safe_name = re.sub(r"[^a-zA-Z0-9_-]", "-", name.strip().lower())
+    if not safe_name:
+        raise ValueError("Skill name cannot be empty")
+    target_dir = Path(skills_dir) if skills_dir else SKILLS_DIR
+    skill_folder = target_dir / safe_name
+    skill_folder.mkdir(parents=True, exist_ok=True)
+    skill_file = skill_folder / "SKILL.md"
+    file_body = f"""---
+name: {safe_name}
+description: {description.strip()}
+---
+
+{content.strip()}
+"""
+    skill_file.write_text(file_body, encoding="utf-8")
+    return {"name": safe_name, "description": description, "file": str(skill_file.relative_to(target_dir.parent))}
+
+
+def register_dynamic_tool(tool_def: Dict[str, Any], repo_root: Path | None = None) -> Dict[str, Any]:
+    """Register and persist a new dynamic bridge tool in the tool catalog."""
+    name = tool_def.get("name", "").strip()
+    if not name:
+        raise ValueError("Tool definition must include 'name'")
+    description = tool_def.get("description", "")
+    input_schema = tool_def.get("inputSchema", {"type": "object", "properties": {}})
+    tags = tool_def.get("tags", [name])
+    TOOL_REGISTRY[name] = {
+        "name": name,
+        "description": description,
+        "inputSchema": input_schema,
+        "tags": tags,
+    }
+    root = Path(repo_root) if repo_root else REPO_ROOT
+    tools_file = root / "tools.json"
+    tools_dict = {}
+    if tools_file.exists():
+        try:
+            tools_dict = json.loads(tools_file.read_text(encoding="utf-8"))
+        except Exception:
+            tools_dict = {}
+    tools_dict[name] = TOOL_REGISTRY[name]
+    tools_file.write_text(json.dumps(tools_dict, indent=2), encoding="utf-8")
+    return TOOL_REGISTRY[name]
+

@@ -132,14 +132,94 @@ PROMPT_DEFINITIONS: List[Dict[str, Any]] = [
 ]
 
 
-def list_prompts() -> List[Dict[str, Any]]:
-    """Return list of supported MCP prompt templates."""
-    return PROMPT_DEFINITIONS
+CUSTOM_PROMPTS_FILE = "prompts.json"
+
+
+def load_custom_prompts(repo_root: Optional[Path] = None) -> List[Dict[str, Any]]:
+    """Load user-defined custom prompt templates from prompts.json."""
+    root = repo_root or Path(__file__).resolve().parent.parent
+    p_file = root / CUSTOM_PROMPTS_FILE
+    if p_file.exists():
+        try:
+            import json
+            data = json.loads(p_file.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                return data
+            if isinstance(data, dict) and "prompts" in data:
+                return data["prompts"]
+        except Exception:
+            pass
+    return []
+
+
+def save_custom_prompt(prompt_def: Dict[str, Any], repo_root: Optional[Path] = None) -> Dict[str, Any]:
+    """Persist a new or updated prompt template to prompts.json."""
+    import json
+    root = repo_root or Path(__file__).resolve().parent.parent
+    p_file = root / CUSTOM_PROMPTS_FILE
+    prompts = load_custom_prompts(root)
+
+    name = prompt_def.get("name", "").strip()
+    if not name:
+        raise ValueError("Prompt template must have a 'name'")
+
+    # Upsert by name
+    updated = False
+    for i, p in enumerate(prompts):
+        if p.get("name") == name:
+            prompts[i] = prompt_def
+            updated = True
+            break
+    if not updated:
+        prompts.append(prompt_def)
+
+    p_file.write_text(json.dumps(prompts, indent=2), encoding="utf-8")
+    return prompt_def
+
+
+def delete_custom_prompt(name: str, repo_root: Optional[Path] = None) -> bool:
+    """Delete a custom prompt template by name."""
+    import json
+    root = repo_root or Path(__file__).resolve().parent.parent
+    p_file = root / CUSTOM_PROMPTS_FILE
+    prompts = load_custom_prompts(root)
+    initial_len = len(prompts)
+    prompts = [p for p in prompts if p.get("name") != name]
+    if len(prompts) < initial_len:
+        p_file.write_text(json.dumps(prompts, indent=2), encoding="utf-8")
+        return True
+    return False
+
+
+def list_prompts(repo_root: Optional[Path] = None) -> List[Dict[str, Any]]:
+    """Return list of supported MCP prompt templates (built-in + user-defined)."""
+    custom = load_custom_prompts(repo_root)
+    custom_names = {p.get("name") for p in custom}
+    combined = list(custom)
+    for b in PROMPT_DEFINITIONS:
+        if b.get("name") not in custom_names:
+            combined.append(b)
+    return combined
 
 
 def get_prompt_response(name: str, arguments: Dict[str, Any], repo_root: Path) -> Dict[str, Any]:
     """Generate prompt messages for MCP prompts/get call."""
     base_instructions = synthesize_system_prompt(repo_root)
+
+    # Check custom prompts first
+    custom_prompts = load_custom_prompts(repo_root)
+    for cp in custom_prompts:
+        if cp.get("name") == name:
+            content_template = cp.get("content") or cp.get("template") or ""
+            # Variable substitution for arguments like {query}, {topic}
+            for k, v in arguments.items():
+                content_template = content_template.replace(f"{{{k}}}", str(v))
+            return {
+                "description": cp.get("description", f"Custom prompt: {name}"),
+                "messages": [
+                    {"role": "user", "content": {"type": "text", "text": content_template}}
+                ],
+            }
 
     if name == "knowledge-search":
         query = arguments.get("query", "")
@@ -187,3 +267,4 @@ def get_prompt_response(name: str, arguments: Dict[str, Any], repo_root: Path) -
         }
 
     raise ValueError(f"Unknown prompt template: '{name}'")
+

@@ -27,7 +27,21 @@ logger = logging.getLogger("control_plane.sandbox")
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
+def get_qmd_cli_args(repo_root: Path) -> List[str]:
+    """Resolve direct Node+TSX command to safely handle spaces in Windows paths."""
+    for root in [Path(repo_root), REPO_ROOT, Path.cwd()]:
+        tsx_cli = root / "qmd-main" / "node_modules" / "tsx" / "dist" / "cli.mjs"
+        qmd_ts = root / "qmd-main" / "src" / "cli" / "qmd.ts"
+        if tsx_cli.exists() and qmd_ts.exists():
+            return ["node", str(tsx_cli), str(qmd_ts)]
+    qmd_bin = shutil.which("qmd") or shutil.which("qmd.cmd")
+    if qmd_bin:
+        return [qmd_bin]
+    return ["cmd", "/c", "qmd"] if sys.platform == "win32" else ["qmd"]
+
+
 @dataclasses.dataclass
+
 class SandboxResult:
     success: bool
     exit_code: int
@@ -322,16 +336,17 @@ def execute_action(
         cmd = [py_bin, str(root / "orchestrator.py")]
 
     elif action == "github_sync":
-        cmd = [py_bin, "-c", "from connectors.github import GitHubConnector; c = GitHubConnector(); print('GitHub sync completed')"]
+        cmd = [py_bin, str(root / "github_extractor_v2.py"), "--sources", "owned,forks,starred"]
 
     elif action == "reindex":
-        if is_win:
-            cmd = ["cmd.exe", "/c", str(root / "qmd.cmd"), "index"]
-        else:
-            cmd = ["qmd", "index"]
+        cmd = get_qmd_cli_args(root) + ["update"]
 
     elif action == "deploy_mirror":
-        cmd = [py_bin, str(root / "build_mirror.py")]
+        cmd = [py_bin, str(root / "scripts" / "build_mirror.py")]
+
+    elif action == "cloudflare_sync":
+        cmd = [py_bin, "-c", "from sync.cloudflare_sync import CloudflareSyncManager; m = CloudflareSyncManager(); print(m.sync_all())"]
+
 
     elif action == "compile_wiki":
         max_items = params.get("max_items", 10)

@@ -53,19 +53,37 @@ class PdfsConnector(SourcePlugin):
         self.parse_func = parse_func  # For testing, inject mock that returns markdown
 
     def _default_parse(self, pdf_path: Path) -> str:
-        # In production, would call LiteParse: lit parse --format markdown
-        # For prototype, just return placeholder
+        # Step 1: Fast digital text extraction first (no OCR overhead)
         try:
-            # Try to use LiteParse if available
+            import os
             from liteparse import LiteParse  # type: ignore
 
-            parser = LiteParse(output_format="markdown", image_mode="placeholder")
-            result = parser.parse(str(pdf_path))
-            return result.text
+            num_workers = max(1, (os.cpu_count() or 4) - 1)
+            fast_parser = LiteParse(
+                output_format="markdown",
+                image_mode="placeholder",
+                ocr_enabled=False,
+                num_workers=num_workers,
+            )
+            result = fast_parser.parse(str(pdf_path))
+            text = (result.text or "").strip()
+
+            # If digital extraction yielded meaningful content, return immediately (<1 second)
+            if len(text) >= 60:
+                return text
+
+            # Step 2: Fallback to full OCR only for scanned/image-only PDFs
+            ocr_parser = LiteParse(
+                output_format="markdown",
+                image_mode="placeholder",
+                ocr_enabled=True,
+                num_workers=num_workers,
+            )
+            ocr_result = ocr_parser.parse(str(pdf_path))
+            return ocr_result.text or text
         except Exception:
-            # Fallback: read as text if not PDF, or return placeholder
             try:
-                return pdf_path.read_text(encoding="utf-8", errors="ignore")[:2000]
+                return pdf_path.read_text(encoding="utf-8", errors="ignore")[:4000]
             except Exception:
                 return "PDF content placeholder."
 

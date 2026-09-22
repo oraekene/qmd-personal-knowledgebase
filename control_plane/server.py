@@ -68,8 +68,25 @@ def check_http_url(url: str, timeout: float = 1.5) -> bool:
         return False
 
 
+def get_qmd_cli_args(repo_root: Path) -> List[str]:
+    """Resolve direct Node+TSX command to safely handle spaces in Windows paths."""
+    import shutil
+    for root in [Path(repo_root), REPO_ROOT, Path.cwd()]:
+        tsx_cli = root / "qmd-main" / "node_modules" / "tsx" / "dist" / "cli.mjs"
+        qmd_ts = root / "qmd-main" / "src" / "cli" / "qmd.ts"
+        if tsx_cli.exists() and qmd_ts.exists():
+            return ["node", str(tsx_cli), str(qmd_ts)]
+    qmd_bin = shutil.which("qmd") or shutil.which("qmd.cmd")
+    if qmd_bin:
+        return [qmd_bin]
+    return ["cmd", "/c", "qmd"] if sys.platform == "win32" else ["qmd"]
+
+
 def find_pids_by_port(port: int) -> List[int]:
     """Find all PIDs actively listening on a given port."""
+    # Fast non-blocking socket pre-flight: skip netstat entirely if port is closed
+    if not check_port_listening("127.0.0.1", port, timeout=0.1):
+        return []
     pids = set()
     if sys.platform == "win32":
         try:
@@ -108,7 +125,7 @@ def kill_pid(pid: int) -> None:
 
 
 class SystemLogger:
-    """Centralized thread-safe logger capturing all daemons, pipelines, and server events."""
+    """Centralized thread-safe logger capturing all daemons, pipelines, and user actions."""
 
     def __init__(self, repo_root: Path, max_entries: int = 5000):
         self.repo_root = repo_root
@@ -116,29 +133,41 @@ class SystemLogger:
         self.entries: collections.deque[Dict[str, Any]] = collections.deque(maxlen=max_entries)
         self.counter: int = 0
         self.log_file = repo_root / "logs" / "system.log"
+        self.audit_file = repo_root / "logs" / "audit.log"
         self.log_file.parent.mkdir(parents=True, exist_ok=True)
 
-    def log(self, source: str, message: str, level: str = "INFO") -> None:
+    def log(self, source: str, message: str, level: str = "INFO", details: Optional[Dict[str, Any]] = None) -> None:
         message = message.rstrip()
         if not message:
             return
         now_str = time.strftime("%Y-%m-%d %H:%M:%S")
+        is_user_action = source.upper() in ("USER_ACTION", "USER", "AUDIT")
         with self.lock:
             self.counter += 1
+            src = "USER_ACTION" if is_user_action else source.upper()
             record = {
                 "id": self.counter,
                 "time": now_str,
-                "source": source.upper(),
+                "source": src,
                 "level": level.upper(),
                 "message": message,
-                "raw": f"[{now_str}] [{source.upper()}] [{level.upper()}] {message}",
+                "details": details or {},
+                "raw": f"[{now_str}] [{src}] [{level.upper()}] {message}",
             }
             self.entries.append(record)
             try:
                 with open(self.log_file, "a", encoding="utf-8") as f:
                     f.write(record["raw"] + "\n")
+                if is_user_action:
+                    with open(self.audit_file, "a", encoding="utf-8") as af:
+                        af.write(record["raw"] + "\n")
             except Exception:
                 pass
+
+    def log_user_action(self, action: str, details: Optional[Dict[str, Any]] = None, level: str = "INFO") -> None:
+        """Record an explicit user action into the dedicated audit trail."""
+        det_str = f" | {json.dumps(details)}" if details else ""
+        self.log(source="USER_ACTION", message=f"{action}{det_str}", level=level, details=details)
 
     def get_logs(
         self, since_id: int = 0, source: Optional[str] = None, level: Optional[str] = None
@@ -151,6 +180,8 @@ class SystemLogger:
                     filtered = [e for e in filtered if e["source"] in ("QMD", "AUTH_PROXY", "TUNNEL", "SUPERVISOR")]
                 elif s == "PIPELINES":
                     filtered = [e for e in filtered if e["source"] in ("PIPELINE", "TASK")]
+                elif s in ("USER_ACTION", "USER", "AUDIT"):
+                    filtered = [e for e in filtered if e["source"] == "USER_ACTION"]
                 else:
                     filtered = [e for e in filtered if e["source"] == s]
             if level and level.upper() != "ALL":
@@ -160,6 +191,7 @@ class SystemLogger:
                 else:
                     filtered = [e for e in filtered if e["level"] == l]
             return filtered
+
 
     def get_raw_lines(self, since_id: int = 0) -> List[str]:
         return [e["raw"] for e in self.get_logs(since_id=since_id)]
@@ -334,16 +366,11 @@ class TaskRunner:
             if action == "orchestrator":
                 cmd = [sys.executable, "orchestrator.py"]
             elif action == "reindex":
-                if sys.platform == "win32":
-                    cmd = ["cmd.exe", "/c", str(self.repo_root / "qmd.cmd"), "update"]
-                else:
-                    cmd = ["qmd", "update"]
+                cmd = get_qmd_cli_args(self.repo_root) + ["update"]
             elif action == "embed":
-                if sys.platform == "win32":
-                    cmd = ["cmd.exe", "/c", str(self.repo_root / "qmd.cmd"), "embed"]
-                else:
-                    cmd = ["qmd", "embed"]
+                cmd = get_qmd_cli_args(self.repo_root) + ["embed"]
             elif action == "wiki":
+
                 cmd = [sys.executable, "-m", "scripts.wiki"]
             elif action == "mirror":
                 cmd = [sys.executable, "scripts/build_mirror.py"]
@@ -433,24 +460,26 @@ class DaemonSupervisor:
                     time.sleep(0.5)
 
                 env["QMD_ALLOWED_ORIGINS"] = "*"
-                if sys.platform == "win32":
-                    cmd = ["cmd.exe", "/c", str(self.repo_root / "qmd.cmd"), "mcp", "--http", "--port", "8181", "--host", "0.0.0.0"]
-                else:
-                    cmd = ["node", "qmd-main/node_modules/tsx/dist/cli.mjs", "qmd-main/src/cli/qmd.ts", "mcp", "--http", "--port", "8181", "--host", "0.0.0.0"]
+                cmd = get_qmd_cli_args(self.repo_root) + ["mcp", "--http", "--port", "8181", "--host", "0.0.0.0"]
 
-                proc = subprocess.Popen(
-                    cmd,
-                    cwd=str(self.repo_root),
-                    env=env,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    bufsize=1,
-                )
-                self.processes["qmd"] = proc
-                _stream_output(proc, "QMD", self.logger)
-                self.logger.log("QMD", f"QMD MCP Server launched (PID {proc.pid}) on port 8181")
-                return {"status": "started", "name": "qmd", "pid": proc.pid}
+
+                try:
+                    proc = subprocess.Popen(
+                        cmd,
+                        cwd=str(self.repo_root),
+                        env=env,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                        bufsize=1,
+                    )
+                    self.processes["qmd"] = proc
+                    _stream_output(proc, "QMD", self.logger)
+                    self.logger.log("QMD", f"QMD MCP Server launched (PID {proc.pid}) on port 8181")
+                    return {"status": "started", "name": "qmd", "pid": proc.pid}
+                except Exception as e:
+                    self.logger.log("QMD", f"Failed to launch QMD: {e}", level="ERROR")
+                    return {"status": "error", "name": "qmd", "message": str(e)}
 
             elif name == "auth_proxy":
                 # Clean up any stale PIDs on 3210 before launching
@@ -460,20 +489,24 @@ class DaemonSupervisor:
                     time.sleep(0.5)
 
                 cmd = [sys.executable, "-u", "-m", "auth_proxy"]
-                proc = subprocess.Popen(
-                    cmd,
-                    cwd=str(self.repo_root),
-                    env=env,
-                    shell=use_shell,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    bufsize=1,
-                )
-                self.processes["auth_proxy"] = proc
-                _stream_output(proc, "AUTH_PROXY", self.logger)
-                self.logger.log("AUTH_PROXY", f"Auth Proxy launched (PID {proc.pid}) on port 3210")
-                return {"status": "started", "name": "auth_proxy", "pid": proc.pid}
+                try:
+                    proc = subprocess.Popen(
+                        cmd,
+                        cwd=str(self.repo_root),
+                        env=env,
+                        shell=use_shell,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                        bufsize=1,
+                    )
+                    self.processes["auth_proxy"] = proc
+                    _stream_output(proc, "AUTH_PROXY", self.logger)
+                    self.logger.log("AUTH_PROXY", f"Auth Proxy launched (PID {proc.pid}) on port 3210")
+                    return {"status": "started", "name": "auth_proxy", "pid": proc.pid}
+                except Exception as e:
+                    self.logger.log("AUTH_PROXY", f"Failed to launch Auth Proxy: {e}", level="ERROR")
+                    return {"status": "error", "name": "auth_proxy", "message": str(e)}
 
             elif name == "tunnel":
                 token = env.get("TUNNEL_TOKEN", "")
@@ -487,20 +520,24 @@ class DaemonSupervisor:
                     time.sleep(0.5)
 
                 cmd = ["cloudflared", "tunnel", "run", "--token", token]
-                proc = subprocess.Popen(
-                    cmd,
-                    cwd=str(self.repo_root),
-                    env=env,
-                    shell=use_shell,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    bufsize=1,
-                )
-                self.processes["tunnel"] = proc
-                _stream_output(proc, "TUNNEL", self.logger)
-                self.logger.log("TUNNEL", f"Cloudflare Tunnel launched (PID {proc.pid})")
-                return {"status": "started", "name": "tunnel", "pid": proc.pid}
+                try:
+                    proc = subprocess.Popen(
+                        cmd,
+                        cwd=str(self.repo_root),
+                        env=env,
+                        shell=use_shell,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                        bufsize=1,
+                    )
+                    self.processes["tunnel"] = proc
+                    _stream_output(proc, "TUNNEL", self.logger)
+                    self.logger.log("TUNNEL", f"Cloudflare Tunnel launched (PID {proc.pid})")
+                    return {"status": "started", "name": "tunnel", "pid": proc.pid}
+                except Exception as e:
+                    self.logger.log("TUNNEL", f"Failed to launch Cloudflare Tunnel: {e}", level="ERROR")
+                    return {"status": "error", "name": "tunnel", "message": str(e)}
 
             return {"status": "unknown_daemon", "name": name}
 
@@ -576,7 +613,15 @@ def make_control_plane_handler(
             super().__init__(*args, directory=str(static_dir), **kwargs)
 
         def log_message(self, format: str, *args: Any) -> None:
-            pass
+            msg = format % args
+            if "/api/logs" in msg and " 200 " in msg:
+                return
+            if any(code in msg for code in (" 40", " 41", " 42", " 43", " 44", " 50", " 500", " 502", " 504")):
+                lvl = "ERROR" if any(c in msg for c in (" 500", " 502", " 504")) else "WARNING"
+                system_logger.log("HTTP", msg, level=lvl)
+            elif "POST" in msg or "PUT" in msg or "DELETE" in msg:
+                system_logger.log("HTTP", msg, level="INFO")
+
 
         def send_json(self, status: int, data: Dict[str, Any]) -> None:
             body = json.dumps(data).encode("utf-8")
@@ -706,9 +751,12 @@ def make_control_plane_handler(
                 query = params.get("q", [""])[0].strip()
                 silo = params.get("silo", [""])[0].strip() or params.get("collection", [""])[0].strip()
                 filter_json = params.get("filter", [""])[0].strip()
+                synthesize = params.get("synthesize", ["false"])[0].lower() in ("true", "1")
                 if not query:
                     self.send_json(400, {"error": "Missing query 'q'"})
                     return
+
+                system_logger.log_user_action("SEARCH_EXECUTE", {"query": query, "silo": silo or "all", "synthesize": synthesize})
 
                 qmd_args = ["search", query]
                 if silo and silo.lower() != "all":
@@ -716,10 +764,7 @@ def make_control_plane_handler(
                 if filter_json:
                     qmd_args.extend(["--filter", filter_json])
 
-                if sys.platform == "win32":
-                    cmd = ["cmd.exe", "/c", str(repo_root / "qmd.cmd")] + qmd_args
-                else:
-                    cmd = ["qmd"] + qmd_args
+                cmd = get_qmd_cli_args(repo_root) + qmd_args
 
                 try:
                     res = subprocess.run(
@@ -730,12 +775,33 @@ def make_control_plane_handler(
                         timeout=45,
                     )
                     raw_out = res.stdout if res.stdout else res.stderr
-                    self.send_json(200, {"query": query, "silo": silo or "all", "filter": filter_json, "output": raw_out, "exit_code": res.returncode})
+                    response_data: Dict[str, Any] = {
+                        "query": query,
+                        "silo": silo or "all",
+                        "filter": filter_json,
+                        "output": raw_out,
+                        "exit_code": res.returncode,
+                    }
+                    if synthesize and raw_out:
+                        try:
+                            synth_prompt = f"Synthesize a clear, grounded answer to '{query}' citing relevant file paths based on these knowledgebase results:\n\n{raw_out[:3000]}"
+                            synth_res = pi_bridge.execute_goal(synth_prompt)
+                            ans = (
+                                synth_res.get("data", {}).get("result")
+                                or synth_res.get("output")
+                                or synth_res.get("message")
+                                or "Synthesized response generated."
+                            )
+                            response_data["synthesis"] = ans
+                        except Exception as se:
+                            response_data["synthesis"] = f"Synthesis note: {se}"
+                    self.send_json(200, response_data)
                 except subprocess.TimeoutExpired:
                     self.send_json(504, {"error": "Search timed out"})
                 except Exception as e:
                     self.send_json(500, {"error": f"Search failed: {e}"})
                 return
+
 
             if path == "/api/connectors":
                 try:
@@ -878,6 +944,7 @@ def make_control_plane_handler(
                     return
 
                 write_env_dict(repo_root / ".env", updates)
+                system_logger.log_user_action("CONFIG_UPDATE", {"keys": list(updates.keys())})
                 self.send_json(200, {"status": "saved", "count": len(updates)})
                 return
 
@@ -896,7 +963,80 @@ def make_control_plane_handler(
                 if sys_prompt_text is not None:
                     (repo_root / "SYSTEM_PROMPT.md").write_text(sys_prompt_text.strip() + "\n", encoding="utf-8")
 
+                system_logger.log_user_action("PROMPTS_UPDATE", {"soul": soul_text is not None, "system_prompt": sys_prompt_text is not None})
                 self.send_json(200, {"status": "saved", "message": "Prompts updated successfully"})
+                return
+
+            if path == "/api/prompts/templates":
+                try:
+                    payload = json.loads(body.decode("utf-8")) if body else {}
+                except Exception:
+                    self.send_json(400, {"error": "Invalid JSON"})
+                    return
+                from auth_proxy.prompt_engine import save_custom_prompt
+                name = payload.get("name", "").strip()
+                desc = payload.get("description", "").strip()
+                content = payload.get("content", "").strip() or payload.get("template", "").strip()
+                arguments = payload.get("arguments", [])
+                if not name or not content:
+                    self.send_json(400, {"error": "Template requires 'name' and 'content'"})
+                    return
+                prompt_def = {
+                    "name": name,
+                    "description": desc,
+                    "arguments": arguments,
+                    "content": content,
+                }
+                res = save_custom_prompt(prompt_def, repo_root=repo_root)
+                system_logger.log_user_action("ADD_PROMPT_TEMPLATE", {"name": name, "description": desc})
+                self.send_json(201, {"status": "created", "template": res})
+                return
+
+            if path == "/api/skills":
+                try:
+                    payload = json.loads(body.decode("utf-8")) if body else {}
+                except Exception:
+                    self.send_json(400, {"error": "Invalid JSON"})
+                    return
+                from auth_proxy.progressive_tools import create_skill
+                name = payload.get("name", "").strip()
+                desc = payload.get("description", "").strip()
+                content = payload.get("content", "").strip()
+                if not name or not content:
+                    self.send_json(400, {"error": "Skill requires 'name' and 'content'"})
+                    return
+                try:
+                    res = create_skill(name=name, description=desc, content=content, skills_dir=repo_root / "skills")
+                    system_logger.log_user_action("CREATE_SKILL", {"name": res["name"], "file": res["file"]})
+                    self.send_json(201, {"status": "created", "skill": res})
+                except Exception as e:
+                    self.send_json(500, {"error": f"Failed to create skill: {e}"})
+                return
+
+            if path == "/api/tools":
+                try:
+                    payload = json.loads(body.decode("utf-8")) if body else {}
+                except Exception:
+                    self.send_json(400, {"error": "Invalid JSON"})
+                    return
+                from auth_proxy.progressive_tools import register_dynamic_tool
+                name = payload.get("name", "").strip()
+                desc = payload.get("description", "").strip()
+                if not name:
+                    self.send_json(400, {"error": "Tool requires 'name'"})
+                    return
+                tool_def = {
+                    "name": name,
+                    "description": desc,
+                    "inputSchema": payload.get("inputSchema", {"type": "object", "properties": {}}),
+                    "tags": payload.get("tags", [name]),
+                }
+                try:
+                    res = register_dynamic_tool(tool_def, repo_root=repo_root)
+                    system_logger.log_user_action("REGISTER_TOOL", {"name": name})
+                    self.send_json(201, {"status": "registered", "tool": res})
+                except Exception as e:
+                    self.send_json(500, {"error": f"Failed to register tool: {e}"})
                 return
 
             if path == "/api/run":
@@ -916,13 +1056,16 @@ def make_control_plane_handler(
                     self.send_json(409, {"error": "A task is already running or action is invalid"})
                     return
 
+                system_logger.log_user_action("PIPELINE_RUN", {"action": action})
                 self.send_json(200, {"status": "started", "action": action})
                 return
 
             if path == "/api/stop":
                 stopped = runner.stop_current()
+                system_logger.log_user_action("PIPELINE_STOP", {})
                 self.send_json(200, {"status": "stopped" if stopped else "not_running"})
                 return
+
 
             if path == "/api/engine/mode":
                 try:
@@ -960,6 +1103,8 @@ def make_control_plane_handler(
                 daemon = payload.get("daemon", "")
                 action = payload.get("action", "")
 
+                system_logger.log_user_action(f"DAEMON_{action.upper()}", {"daemon": daemon})
+
                 if action == "start":
                     if daemon == "all":
                         res1 = supervisor.start_daemon("qmd")
@@ -981,18 +1126,24 @@ def make_control_plane_handler(
                         self.send_json(200, res)
                     return
                 elif action == "restart":
-                    if daemon == "all":
-                        supervisor.stop_daemon("qmd")
-                        supervisor.stop_daemon("auth_proxy")
-                        supervisor.stop_daemon("tunnel")
-                        time.sleep(1.0)
-                        res1 = supervisor.start_daemon("qmd")
-                        res2 = supervisor.start_daemon("auth_proxy")
-                        res3 = supervisor.start_daemon("tunnel")
-                        self.send_json(200, {"results": [res1, res2, res3]})
-                    else:
-                        res = supervisor.restart_daemon(daemon)
-                        self.send_json(200, res)
+                    def _do_restart():
+                        if daemon == "all":
+                            supervisor.stop_daemon("qmd")
+                            supervisor.stop_daemon("auth_proxy")
+                            supervisor.stop_daemon("tunnel")
+                            time.sleep(1.0)
+                            supervisor.start_daemon("qmd")
+                            supervisor.start_daemon("auth_proxy")
+                            supervisor.start_daemon("tunnel")
+                        else:
+                            supervisor.restart_daemon(daemon)
+
+                    threading.Thread(target=_do_restart, daemon=True).start()
+                    self.send_json(200, {
+                        "status": "restarting",
+                        "daemon": daemon,
+                        "message": f"Daemon '{daemon}' restart initiated asynchronously in background.",
+                    })
                     return
 
                 self.send_json(400, {"error": "Invalid action or daemon"})
@@ -1074,28 +1225,46 @@ def make_control_plane_handler(
 
                 filename = os.path.basename(filename).strip()
                 lower = filename.lower()
+                is_chat = False
+                is_notes = False
 
                 if lower.endswith(".zip"):
-                    is_notes_zip = any(k in lower for k in ("simplenote", "keep", "note"))
-                    if not is_notes_zip:
-                        try:
-                            with zipfile.ZipFile(io.BytesIO(body), "r") as zf:
-                                for name in zf.namelist():
-                                    nl = name.lower()
-                                    if "notes.json" in nl or nl.startswith("notes/") or nl.startswith("takeout/keep/"):
-                                        is_notes_zip = True
-                                        break
-                        except Exception:
-                            pass
+                    try:
+                        with zipfile.ZipFile(io.BytesIO(body), "r") as zf:
+                            names = [n.lower() for n in zf.namelist()]
+                            if any("conversations.json" in n or "chat.html" in n or "conversations/" in n for n in names):
+                                is_chat = True
+                            elif any("notes.json" in n or n.startswith("notes/") or "takeout/keep/" in n for n in names):
+                                is_notes = True
+                    except Exception:
+                        pass
 
-                    if is_notes_zip:
+                    if not is_chat and not is_notes:
+                        if any(k in lower for k in ("claude", "chatgpt", "chat", "conversation")):
+                            is_chat = True
+                        elif any(k in lower for k in ("simplenote", "keep", "notes")):
+                            is_notes = True
+
+                    if is_notes and not is_chat:
                         dest_dir = repo_root / "inbox" / "notes"
                     else:
                         dest_dir = repo_root / "inbox" / "chats"
                 elif lower.endswith(".pdf"):
                     dest_dir = repo_root / "inbox" / "pdfs"
+                elif lower.endswith(".json"):
+                    sample = body[:4096].decode("utf-8", errors="ignore").lower()
+                    if "conversations.json" in lower or "chat_messages" in sample or ("chat" in sample and "uuid" in sample):
+                        dest_dir = repo_root / "inbox" / "chats"
+                    elif "notes.json" in lower:
+                        dest_dir = repo_root / "inbox" / "notes"
+                    else:
+                        dest_dir = repo_root / "inbox"
                 elif lower.endswith(".md") or lower.endswith(".txt"):
-                    dest_dir = repo_root / "corpus" / "notes"
+                    sample = body[:4096].decode("utf-8", errors="ignore").lower()
+                    if any(marker in sample for marker in ("human:", "assistant:", "user:", "claude:", "chatgpt:")):
+                        dest_dir = repo_root / "inbox" / "chats"
+                    else:
+                        dest_dir = repo_root / "corpus" / "notes"
                 else:
                     dest_dir = repo_root / "inbox"
 
@@ -1103,13 +1272,21 @@ def make_control_plane_handler(
                 dest_path = dest_dir / filename
                 dest_path.write_bytes(body)
 
+                target_rel = str(dest_dir.relative_to(repo_root)).replace("\\", "/")
+                system_logger.log_user_action("UPLOAD_FILE", {
+                    "filename": filename,
+                    "target_dir": target_rel,
+                    "size_bytes": len(body),
+                })
+
                 self.send_json(201, {
                     "status": "uploaded",
                     "filename": filename,
-                    "target_dir": str(dest_dir.relative_to(repo_root)),
+                    "target_dir": target_rel,
                     "size_bytes": len(body),
                 })
                 return
+
 
             if path == "/api/automations":
                 try:
@@ -1123,6 +1300,7 @@ def make_control_plane_handler(
                     job.next_run_at = compute_next_run(job.schedule).isoformat()
                 scheduler_store.upsert_job(job)
                 system_logger.log("SCHEDULER", f"Saved automation '{job.name}' ({job.id})")
+                system_logger.log_user_action("AUTOMATION_SAVE", {"id": job.id, "name": job.name, "schedule": job.schedule})
                 self.send_json(200, {"status": "saved", "job": job.to_dict()})
                 return
 
@@ -1130,6 +1308,7 @@ def make_control_plane_handler(
                 job_id = path[len("/api/automations/"): -len("/trigger")].strip()
                 try:
                     res = scheduler_daemon.trigger_job(job_id)
+                    system_logger.log_user_action("AUTOMATION_TRIGGER", {"id": job_id})
                     self.send_json(200, {"status": "triggered", "result": res.to_dict()})
                 except Exception as e:
                     self.send_json(500, {"error": f"Trigger failed: {e}"})
@@ -1147,6 +1326,7 @@ def make_control_plane_handler(
                     job.next_run_at = compute_next_run(job.schedule).isoformat()
                 scheduler_store.upsert_job(job)
                 system_logger.log("SCHEDULER", f"Toggled automation '{job.name}' ({job.id}) enabled={job.enabled}")
+                system_logger.log_user_action("AUTOMATION_TOGGLE", {"id": job_id, "enabled": job.enabled})
                 self.send_json(200, {"status": "updated", "job": job.to_dict()})
                 return
 
@@ -1155,6 +1335,7 @@ def make_control_plane_handler(
                 deleted = scheduler_store.delete_job(job_id)
                 if deleted:
                     system_logger.log("SCHEDULER", f"Deleted automation '{job_id}'")
+                    system_logger.log_user_action("AUTOMATION_DELETE", {"id": job_id})
                     self.send_json(200, {"status": "deleted", "id": job_id})
                 else:
                     self.send_json(404, {"error": f"Automation '{job_id}' not found"})
@@ -1170,6 +1351,7 @@ def make_control_plane_handler(
                 params_dict = payload.get("params", {})
                 tier = payload.get("tier", "local")
                 timeout = int(payload.get("timeout", 300))
+                system_logger.log_user_action("SANDBOX_EXECUTE", {"action": action, "tier": tier, "params": params_dict})
                 from control_plane.sandbox import execute_action
                 res = execute_action(action=action, params=params_dict, tier=tier, timeout=timeout, repo_root=repo_root)
                 self.send_json(200, res.to_dict())
@@ -1188,6 +1370,7 @@ def make_control_plane_handler(
                 write_env_dict(repo_root / ".env", {"OPERATIONAL_MODE": mode})
                 os.environ["OPERATIONAL_MODE"] = mode
                 system_logger.log("OPERATIONAL_MODE", f"Switched operational mode to '{mode}'")
+                system_logger.log_user_action("OPERATIONAL_MODE_CHANGE", {"mode": mode})
                 self.send_json(200, {"status": "updated", "operational_mode": mode})
                 return
 
@@ -1198,6 +1381,7 @@ def make_control_plane_handler(
                     payload = {}
                 commit_msg = payload.get("message", "Manual sync triggered from Control Plane")
                 system_logger.log("SYNC", f"Triggered Cloudflare sync: '{commit_msg}'")
+                system_logger.log_user_action("SYNC_TRIGGER", {"message": commit_msg})
                 res = sync_manager.sync_all(corpus_dir=repo_root / "corpus", commit_message=commit_msg)
                 self.send_json(200, res)
                 return
@@ -1213,6 +1397,7 @@ def make_control_plane_handler(
                     self.send_json(400, {"error": "Missing 'commit' hash in request body"})
                     return
                 system_logger.log("SYNC", f"Reverting corpus to commit: {commit_hash}")
+                system_logger.log_user_action("SYNC_REVERT", {"commit": commit_hash})
                 res = sync_manager.artifacts.revert_commit(repo_root / "corpus", commit_hash)
                 self.send_json(200, res)
                 return
@@ -1230,9 +1415,11 @@ def make_control_plane_handler(
                 session_id = payload.get("session_id")
                 model = payload.get("model")
                 system_logger.log("PI_AGENT", f"Autonomous goal received: '{prompt[:100]}'")
+                system_logger.log_user_action("PI_GOAL_EXECUTE", {"prompt": prompt[:120], "model": model})
                 result = pi_bridge.execute_goal(prompt, session_id=session_id, model=model)
                 self.send_json(200, result)
                 return
+
 
             self.send_json(404, {"error": "Endpoint not found"})
 
@@ -1258,6 +1445,7 @@ def make_control_plane_handler(
                         setattr(existing, k, v)
                 scheduler_store.upsert_job(existing)
                 system_logger.log("SCHEDULER", f"Updated automation '{existing.name}' ({existing.id})")
+                system_logger.log_user_action("AUTOMATION_UPDATE", {"id": existing.id, "name": existing.name})
                 self.send_json(200, {"status": "saved", "job": existing.to_dict()})
                 return
 
@@ -1271,8 +1459,10 @@ def make_control_plane_handler(
                 deleted = scheduler_store.delete_job(job_id)
                 if deleted:
                     system_logger.log("SCHEDULER", f"Deleted automation '{job_id}'")
+                    system_logger.log_user_action("AUTOMATION_DELETE", {"id": job_id})
                     self.send_json(200, {"status": "deleted", "id": job_id})
                 else:
+
                     self.send_json(404, {"error": f"Automation '{job_id}' not found"})
                 return
             self.send_json(404, {"error": "Endpoint not found"})
