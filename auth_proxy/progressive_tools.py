@@ -475,7 +475,9 @@ def register_dynamic_tool(tool_def: Dict[str, Any], repo_root: Path | None = Non
     tools_dict = {}
     if tools_file.exists():
         try:
-            tools_dict = json.loads(tools_file.read_text(encoding="utf-8"))
+            loaded = json.loads(tools_file.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                tools_dict = loaded
         except Exception:
             tools_dict = {}
     tools_dict[name] = TOOL_REGISTRY[name]

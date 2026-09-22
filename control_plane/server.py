@@ -747,6 +747,18 @@ def make_control_plane_handler(
                 self.wfile.write(content)
                 return
 
+            if path in ("/api/audit", "/api/audit-trail", "/api/logs/audit"):
+                since = int(params.get("since", [0])[0])
+                entries = system_logger.get_logs(since_id=since, source="USER_ACTION")
+                last_id = entries[-1]["id"] if entries else since
+                self.send_json(200, {
+                    "audit_trail": [e["raw"] for e in entries],
+                    "entries": entries,
+                    "last_id": last_id,
+                    "total": len(entries),
+                })
+                return
+
             if path == "/api/search":
                 query = params.get("q", [""])[0].strip()
                 silo = params.get("silo", [""])[0].strip() or params.get("collection", [""])[0].strip()

@@ -104,6 +104,8 @@ class NotesConnector(SourcePlugin):
 
         count = 0
         search_dirs = [self.inbox_dir]
+        if (self.inbox_dir / "notes").exists():
+            search_dirs.append(self.inbox_dir / "notes")
         if self.inbox_dir.parent.exists() and self.inbox_dir.parent.name == "inbox":
             search_dirs.append(self.inbox_dir.parent)
 
@@ -133,7 +135,24 @@ class NotesConnector(SourcePlugin):
                     if count >= limit:
                         break
 
-            # 2. Process loose .txt and .md files in inbox/notes
+            # 2. Process loose notes.json files in inbox/notes
+            for json_file in sorted(sdir.glob("*.json")):
+                if count >= limit:
+                    break
+                if "notes" in json_file.name.lower():
+                    try:
+                        for payload in self._process_simplenote_json(json_file.read_bytes(), since):
+                            if payload.source_id in seen_ids:
+                                continue
+                            seen_ids.add(payload.source_id)
+                            count += 1
+                            yield payload
+                            if count >= limit:
+                                break
+                    except Exception:
+                        continue
+
+            # 3. Process loose .txt and .md files in inbox/notes
             if sdir.name == "notes":
                 for note_file in sorted(list(sdir.glob("*.md")) + list(sdir.glob("*.txt"))):
                     if count >= limit:
@@ -171,6 +190,56 @@ class NotesConnector(SourcePlugin):
                     except Exception:
                         continue
 
+    def _process_simplenote_json(self, raw_data: bytes, since: datetime) -> Iterator[UnitPayload]:
+        """Extract units from raw Simplenote notes.json bytes."""
+        try:
+            parsed = json.loads(raw_data.decode("utf-8", errors="replace"))
+            notes_list = []
+            if isinstance(parsed, dict) and "activeNotes" in parsed:
+                notes_list = parsed["activeNotes"]
+            elif isinstance(parsed, list):
+                notes_list = parsed
+            elif isinstance(parsed, dict) and "notes" in parsed:
+                notes_list = parsed["notes"]
+
+            if notes_list:
+                for note in notes_list:
+                    if not isinstance(note, dict) or note.get("deleted", False):
+                        continue
+                    content = note.get("content", "")
+                    if not content.strip():
+                        continue
+                    note_id = str(note.get("id") or "")
+                    created_at = _parse_iso_date(note.get("creationDate") or note.get("lastModified"))
+                    if created_at <= since:
+                        continue
+                    title = _extract_title(content, fallback=note_id or "Untitled Note")
+                    if not note_id:
+                        note_id = re.sub(r"[^\w\-]", "_", title.lower())[:40]
+                    summary = _extract_summary(content)
+                    body = _format_note_body(content, title)
+
+                    raw_tags = note.get("tags") or []
+                    tags = ["simplenote", "notes"]
+                    for t in raw_tags:
+                        if isinstance(t, str) and t.strip():
+                            tags.append(t.strip().lower())
+
+                    yield UnitPayload(
+                        source="simplenote",
+                        silo="notes/simplenote",
+                        source_id=note_id,
+                        url="",
+                        created_at=created_at.isoformat(),
+                        tags=tags,
+                        author="user",
+                        title=title,
+                        summary=summary,
+                        body_markdown=body,
+                    )
+        except Exception:
+            return
+
     def _process_zip(self, zip_path: Path, since: datetime) -> Iterator[UnitPayload]:
         """Extract Simplenote or Keep notes from a ZIP archive."""
         try:
@@ -182,59 +251,8 @@ class NotesConnector(SourcePlugin):
                 if json_candidates:
                     target_json = json_candidates[0]
                     try:
-                        raw_data = zf.read(target_json)
-                        parsed = json.loads(raw_data.decode("utf-8", errors="replace"))
-
-                        notes_list = []
-                        if isinstance(parsed, dict) and "activeNotes" in parsed:
-                            notes_list = parsed["activeNotes"]
-                        elif isinstance(parsed, list):
-                            notes_list = parsed
-                        elif isinstance(parsed, dict) and "notes" in parsed:
-                            notes_list = parsed["notes"]
-
-                        if notes_list:
-                            for note in notes_list:
-                                if not isinstance(note, dict):
-                                    continue
-                                if note.get("deleted", False):
-                                    continue
-
-                                content = note.get("content", "")
-                                if not content.strip():
-                                    continue
-
-                                note_id = str(note.get("id") or "")
-                                created_at = _parse_iso_date(note.get("creationDate") or note.get("lastModified"))
-                                if created_at <= since:
-                                    continue
-
-                                title = _extract_title(content, fallback=note_id or "Untitled Note")
-                                if not note_id:
-                                    note_id = re.sub(r"[^\w\-]", "_", title.lower())[:40]
-
-                                summary = _extract_summary(content)
-                                body = _format_note_body(content, title)
-
-                                raw_tags = note.get("tags") or []
-                                tags = ["simplenote", "notes"]
-                                for t in raw_tags:
-                                    if isinstance(t, str) and t.strip():
-                                        tags.append(t.strip().lower())
-
-                                yield UnitPayload(
-                                    source="simplenote",
-                                    silo="notes/simplenote",
-                                    source_id=note_id,
-                                    url="",
-                                    created_at=created_at.isoformat(),
-                                    tags=tags,
-                                    author="user",
-                                    title=title,
-                                    summary=summary,
-                                    body_markdown=body,
-                                )
-                            return
+                        yield from self._process_simplenote_json(zf.read(target_json), since)
+                        return
                     except Exception:
                         pass
 

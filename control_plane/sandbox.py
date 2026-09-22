@@ -376,7 +376,7 @@ def execute_action(
             )
         import shlex
         if is_win:
-            if raw_cmd.startswith(("python ", "python.exe ")):
+            if raw_cmd.startswith(("python ", "python.exe ", f'"{py_bin}"', py_bin)):
                 parts = shlex.split(raw_cmd, posix=False)
                 parts[0] = py_bin
                 cmd = [

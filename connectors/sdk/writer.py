@@ -61,6 +61,14 @@ def _frontmatter_yaml(payload: UnitPayload, content_hash: str, ingested_at: str)
     # Manual YAML to avoid pyyaml dep; test checks via substring, not parse
     url = payload.url or ""
     author = payload.author or ""
+    created_at_val = payload.created_at
+    if hasattr(created_at_val, "isoformat"):
+        created_at_val = created_at_val.isoformat()
+    elif created_at_val is None:
+        created_at_val = ""
+    else:
+        created_at_val = str(created_at_val)
+
     tags_str = _format_tags(payload.tags)
     lines = [
         "---",
@@ -68,7 +76,7 @@ def _frontmatter_yaml(payload: UnitPayload, content_hash: str, ingested_at: str)
         f"silo: {_quote_yaml_value(payload.silo)}",
         f"source_id: {_quote_yaml_value(payload.source_id)}",
         f"url: {_quote_yaml_value(url)}",
-        f"created_at: {_quote_yaml_value(payload.created_at or '')}",
+        f"created_at: {_quote_yaml_value(created_at_val)}",
         f"ingested_at: {_quote_yaml_value(ingested_at)}",
         f"tags: {tags_str}",
         f"author: {_quote_yaml_value(author)}",

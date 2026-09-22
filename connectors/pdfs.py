@@ -94,7 +94,11 @@ class PdfsConnector(SourcePlugin):
             since = since.replace(tzinfo=timezone.utc)
 
         count = 0
-        for pdf_path in sorted(self.inbox_dir.glob("*.pdf")):
+        candidate_pdfs = set(self.inbox_dir.glob("*.pdf"))
+        if (self.inbox_dir / "pdfs").exists():
+            candidate_pdfs.update((self.inbox_dir / "pdfs").glob("*.pdf"))
+
+        for pdf_path in sorted(candidate_pdfs):
             if count >= limit:
                 break
             try:

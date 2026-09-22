@@ -8,10 +8,10 @@
       "params": {},
       "tier": "local",
       "enabled": true,
-      "last_run_at": "2026-09-22T19:09:48.865153+00:00",
-      "last_status": "ready",
-      "last_error": null,
-      "next_run_at": "2026-09-22T21:00:00.000000+00:00"
+      "last_run_at": "2026-09-22T21:00:09.220868+00:00",
+      "last_status": "failed",
+      "last_error": "Execution timed out after 300 seconds.",
+      "next_run_at": "2026-09-22T21:30:09.220868+00:00"
     },
     {
       "id": "job_cloudflare_sync",
@@ -21,10 +21,10 @@
       "params": {},
       "tier": "local",
       "enabled": true,
-      "last_run_at": null,
-      "last_status": "ready",
-      "last_error": null,
-      "next_run_at": "2026-09-22T21:00:00.000000+00:00"
+      "last_run_at": "2026-09-22T21:00:09.220868+00:00",
+      "last_status": "failed",
+      "last_error": "Unknown sandbox action: 'cloudflare_sync'",
+      "next_run_at": "2026-09-22T21:30:09.220868+00:00"
     },
     {
       "id": "job_github_sync",

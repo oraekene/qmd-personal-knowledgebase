@@ -553,3 +553,7 @@ class AgentReachConnector(SourcePlugin):
         if shutil.which("gh"):
             available.append("gh")
         return True, f"Agent-Reach active (available CLI backends: {', '.join(available) or 'web fallback'})"
+
+
+ReachConnector = AgentReachConnector
+
