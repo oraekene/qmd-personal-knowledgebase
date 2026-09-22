@@ -33,20 +33,69 @@ AUTOMATIONS_FILE = REPO_ROOT / "automations.json"
 
 def _match_cron_field(val: int, expr: str) -> bool:
     """Check if an integer matches a single cron field expression."""
-    expr = expr.strip()
-    if expr == "*":
+    try:
+        expr = expr.strip()
+        if expr == "*":
+            return True
+        if "/" in expr:
+            base, step = expr.split("/", 1)
+            step_i = int(step)
+            if step_i <= 0:
+                return False
+            start = 0 if base == "*" else int(base)
+            return (val >= start) and ((val - start) % step_i == 0)
+        if "-" in expr:
+            start_s, end_s = expr.split("-", 1)
+            return int(start_s) <= val <= int(end_s)
+        if "," in expr:
+            return any(_match_cron_field(val, sub) for sub in expr.split(","))
+        return int(expr) == val
+    except Exception:
+        return False
+
+
+CRON_RANGES = [
+    (0, 59),  # minute
+    (0, 23),  # hour
+    (1, 31),  # day of month
+    (1, 12),  # month
+    (0, 7),   # day of week
+]
+
+
+def _validate_cron_syntax(cron_str: str) -> bool:
+    """Check if a 5-part cron expression has valid characters, step sizes, and numerical bounds."""
+    parts = cron_str.strip().split()
+    if len(parts) != 5:
+        return False
+    try:
+        for idx, (p, (low, high)) in enumerate(zip(parts, CRON_RANGES)):
+            for sub in p.split(","):
+                if sub in ("*", "?"):
+                    continue
+                if "/" in sub:
+                    base, step = sub.split("/", 1)
+                    if not step.isdigit() or int(step) <= 0:
+                        return False
+                    if base != "*":
+                        if not base.isdigit() or not (low <= int(base) <= high):
+                            return False
+                elif "-" in sub:
+                    ranges = sub.split("-", 1)
+                    if not ranges[0].isdigit() or not ranges[1].isdigit():
+                        return False
+                    r1, r2 = int(ranges[0]), int(ranges[1])
+                    if not (low <= r1 <= high) or not (low <= r2 <= high) or r1 > r2:
+                        return False
+                elif not sub.isdigit():
+                    return False
+                else:
+                    val = int(sub)
+                    if not (low <= val <= high):
+                        return False
         return True
-    if "/" in expr:
-        base, step = expr.split("/", 1)
-        step_i = int(step)
-        start = 0 if base == "*" else int(base)
-        return (val >= start) and ((val - start) % step_i == 0)
-    if "-" in expr:
-        start_s, end_s = expr.split("-", 1)
-        return int(start_s) <= val <= int(end_s)
-    if "," in expr:
-        return any(_match_cron_field(val, sub) for sub in expr.split(","))
-    return int(expr) == val
+    except Exception:
+        return False
 
 
 def matches_cron(dt: datetime.datetime, cron_str: str) -> bool:
@@ -105,6 +154,9 @@ def compute_next_run(
         s = "0 3 * * 0"  # Sunday 03:00 AM UTC
     elif s == "@monthly":
         s = "0 4 1 * *"  # 1st of month 04:00 AM UTC
+
+    if not _validate_cron_syntax(s):
+        return base_dt + datetime.timedelta(hours=1)
 
     # Standard 5-part cron evaluation: scan up to 365 days
     for _ in range(60 * 24 * 365):

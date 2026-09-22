@@ -21,15 +21,17 @@ def safe_filename(source_id: str) -> str:
     # Prior art: github_extractor_v2.py:165 safe_filename, platform_extractor.py:109
     # Replace path separators and Windows-unsafe chars; normalize spaces to _ for portability
     s = source_id.replace("/", "__").replace("\\", "__")
+    # Neutralize directory traversal dots
+    s = s.replace("..", "__")
     # Replace Windows-unsafe: :*?"<>|  -> _
     s = re.sub(r'[:*?"<>|]', "_", s)
     # Normalize spaces to _ for QMD glob portability (was keep-as-is, now strict)
     s = s.replace(" ", "_")
-    # Strip leading/trailing whitespace/dot
-    s = s.strip().strip(".")
+    # Strip leading/trailing whitespace/dot/underscores
+    s = s.strip().strip(". ")
     if not s:
         s = "_"
-    # Ensure not too long (255) — truncate
+    # Ensure not too long (200) — truncate
     if len(s) > 200:
         s = s[:200]
     return s
