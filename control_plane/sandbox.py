@@ -231,13 +231,22 @@ class CloudSandbox:
             exec_res = sb.commands.run(cmd)
             duration = time.time() - start_time
             success = exec_res.exit_code == 0
+            stdout = exec_res.stdout or ""
+            artifacts: List[str] = []
+            try:
+                parsed = json.loads(stdout)
+                if isinstance(parsed, dict) and "artifacts_synced" in parsed:
+                    artifacts = parsed["artifacts_synced"]
+            except Exception:
+                pass
             return SandboxResult(
                 success=success,
                 exit_code=exec_res.exit_code,
-                stdout=exec_res.stdout or "",
+                stdout=stdout,
                 stderr=exec_res.stderr or "",
                 duration_seconds=duration,
                 tier="cloud",
+                artifacts_synced=artifacts,
             )
 
     def _run_modal(
@@ -273,27 +282,28 @@ class CloudSandbox:
         )
         sb.wait()
         duration = time.time() - start_time
+        stdout = sb.stdout.read() or ""
+        artifacts: List[str] = []
+        try:
+            parsed = json.loads(stdout)
+            if isinstance(parsed, dict) and "artifacts_synced" in parsed:
+                artifacts = parsed["artifacts_synced"]
+        except Exception:
+            pass
         return SandboxResult(
             success=sb.returncode == 0,
             exit_code=sb.returncode,
-            stdout=sb.stdout.read() or "",
+            stdout=stdout,
             stderr=sb.stderr.read() or "",
             duration_seconds=duration,
             tier="cloud",
+            artifacts_synced=artifacts,
         )
 
     def _build_cloud_command(self, action: str, params: Dict[str, Any]) -> str:
-        """Construct bash command string for remote microVM."""
-        if action == "reach_ingest":
-            url = params.get("url", "")
-            return f"python -m connectors.reach --url '{url}'"
-        elif action == "ingest_inbox":
-            return "python orchestrator.py"
-        elif action == "compile_wiki":
-            return "python -m wiki_compiler"
-        elif action == "reindex":
-            return "qmd index"
-        return f"echo 'Executing cloud action: {action}'"
+        """Construct bash command string for remote microVM via sandbox.worker_cloud."""
+        params_json = json.dumps(params).replace("'", "'\\''")
+        return f"python -m sandbox.worker_cloud --action '{action}' --params '{params_json}'"
 
 
 # ----------------------------------------------------------------------

@@ -173,6 +173,30 @@ class CloudflareArtifactsClient:
         except Exception as e:
             return {"status": "error", "message": str(e)}
 
+    def pull_directory(self, corpus_dir: Path) -> Dict[str, Any]:
+        """Pull latest changes from Cloudflare Artifacts edge repository."""
+        if not corpus_dir.exists():
+            corpus_dir.mkdir(parents=True, exist_ok=True)
+
+        if not self.is_configured:
+            return {"status": "unconfigured", "files": []}
+
+        try:
+            auth_url = f"https://token:{self.api_token}@api.cloudflare.com/client/v4/accounts/{self.account_id}/artifacts/{self.namespace}/{self.repo_name}.git"
+            git_dir = corpus_dir / ".git"
+            if not git_dir.exists():
+                res = subprocess.run(["git", "clone", "--depth", "1", auth_url, str(corpus_dir)], capture_output=True, text=True)
+                if res.returncode == 0:
+                    return {"status": "cloned", "files": [p.name for p in corpus_dir.iterdir()]}
+            else:
+                res = subprocess.run(["git", "-C", str(corpus_dir), "pull", auth_url, "main"], capture_output=True, text=True)
+                if res.returncode == 0:
+                    return {"status": "pulled", "files": [p.name for p in corpus_dir.iterdir()]}
+            return {"status": "error", "message": res.stderr, "files": []}
+        except Exception as e:
+            logger.warning("Remote pull failed: %s", e)
+            return {"status": "error", "message": str(e), "files": []}
+
 
 class CloudflareR2Client:
     """S3-compatible client for Cloudflare R2 object storage."""
@@ -264,9 +288,15 @@ class CloudflareSyncManager:
         self,
         artifacts_client: CloudflareArtifactsClient | None = None,
         r2_client: CloudflareR2Client | None = None,
+        repo_root: Path | None = None,
     ):
         self.artifacts = artifacts_client or CloudflareArtifactsClient()
         self.r2 = r2_client or CloudflareR2Client()
+        self.repo_root = repo_root
+
+    @property
+    def is_configured(self) -> bool:
+        return self.artifacts.is_configured or self.r2.is_configured
 
     def get_operational_mode(self) -> str:
         """Read 3-tier operational mode from env: offline-only, offline+cloudflare-wiki, full."""
@@ -275,6 +305,26 @@ class CloudflareSyncManager:
     def is_cloud_sync_allowed(self) -> bool:
         mode = self.get_operational_mode()
         return mode == "full"
+
+    def sync_up(
+        self,
+        corpus_dir: Path = Path("corpus"),
+        db_path: Path | None = None,
+        commit_message: str = "Automated sync from QMD",
+    ) -> Dict[str, Any]:
+        """Alias for sync_all pushing upstream."""
+        return self.sync_all(corpus_dir=corpus_dir, db_path=db_path, commit_message=commit_message)
+
+    def sync_down(self, corpus_dir: Path = Path("corpus")) -> Dict[str, Any]:
+        """Pull downstream changes from Cloudflare Artifacts edge repository."""
+        if not self.is_cloud_sync_allowed():
+            return {
+                "status": "blocked",
+                "mode": self.get_operational_mode(),
+                "message": f"Cloud sync blocked by operational mode: {self.get_operational_mode()}",
+                "files": [],
+            }
+        return self.artifacts.pull_directory(corpus_dir=corpus_dir)
 
     def sync_all(
         self,
