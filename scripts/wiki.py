@@ -184,7 +184,7 @@ def ensure_provider_available() -> None:
     provider = provider.lower()
     if provider in ("openai", "atlascloud", "anthropic", "minimax", "copilot"):
         key_vars = {
-            "openai": ["OPENAI_API_KEY"],
+            "openai": ["OPENAI_API_KEY", "CLOUDFLARE_API_TOKEN"],
             "anthropic": ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"],
             "minimax": ["MINIMAX_API_KEY"],
             "copilot": ["GITHUB_TOKEN"],
@@ -589,8 +589,11 @@ if __name__ == "__main__":
     args = parser.parse_args()
     corpus = pathlib.Path(args.corpus)
     state = pathlib.Path(args.state)
-    if args.command == "refresh":
-        res = refresh_stale(corpus, state)
-    else:
-        res = compile_wiki(corpus, state, mock=args.mock or None)
-    print(f"Wiki compile result: {res}")
+    try:
+        if args.command == "refresh":
+            res = refresh_stale(corpus, state)
+        else:
+            res = compile_wiki(corpus, state, mock=args.mock or None)
+        print(f"Wiki compile result: {res}")
+    except ProviderUnavailableError as e:
+        print(f"Wiki compile skipped (provider unavailable): {e}")

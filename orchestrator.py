@@ -211,13 +211,16 @@ if __name__ == "__main__":
             logger.warning("Wiki interval check failed, proceeding: %s", e)
 
         try:
-            from scripts.wiki import compile_wiki, refresh_stale
+            from scripts.wiki import ProviderUnavailableError, compile_wiki, refresh_stale
 
             if cfg.wiki_mode in ("refresh", "stale", "refresh --stale"):
                 result = refresh_stale(corpus_root)
             else:
                 result = compile_wiki(corpus_root)
             logger.info("Wiki compile result: %s", result)
+            return 0
+        except ProviderUnavailableError as e:
+            logger.warning("Wiki compile skipped (provider unavailable): %s", e)
             return 0
         except Exception as e:
             # Provider guard throws ProviderUnavailableError (provider-guard.ts) — log and re-raise for isolation

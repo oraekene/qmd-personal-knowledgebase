@@ -525,7 +525,8 @@ class DaemonSupervisor:
                     subprocess.run(["taskkill", "/F", "/IM", "cloudflared.exe"], capture_output=True)
                     time.sleep(0.5)
 
-                cmd = ["cloudflared", "tunnel", "run", "--token", token]
+                protocol = env.get("CLOUDFLARED_PROTOCOL", "http2" if sys.platform == "win32" else "auto")
+                cmd = ["cloudflared", "tunnel", "--protocol", protocol, "run", "--token", token]
                 try:
                     proc = subprocess.Popen(
                         cmd,
@@ -1156,7 +1157,9 @@ def make_control_plane_handler(
                 if action == "start":
                     if daemon == "all":
                         res1 = supervisor.start_daemon("qmd")
+                        time.sleep(0.5)
                         res2 = supervisor.start_daemon("auth_proxy")
+                        time.sleep(0.5)
                         res3 = supervisor.start_daemon("tunnel")
                         self.send_json(200, {"results": [res1, res2, res3]})
                     else:
@@ -1181,7 +1184,9 @@ def make_control_plane_handler(
                             supervisor.stop_daemon("tunnel")
                             time.sleep(1.0)
                             supervisor.start_daemon("qmd")
+                            time.sleep(0.5)
                             supervisor.start_daemon("auth_proxy")
+                            time.sleep(0.5)
                             supervisor.start_daemon("tunnel")
                         else:
                             supervisor.restart_daemon(daemon)

@@ -14,6 +14,7 @@ import logging
 import os
 import socket
 import sys
+import time
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -260,22 +261,34 @@ def make_handler(token: str, target: str) -> type[BaseHTTPRequestHandler]:
                 req.headers["Accept"] = f"{accept_val}, text/event-stream"
 
             try:
-                try:
-                    resp_cm = urllib.request.urlopen(req)
-                except (urllib.error.URLError, TimeoutError) as conn_err:
-                    # Fallback between 127.0.0.1 and localhost if IPv4/IPv6 loopback differs
-                    fallback_url = None
-                    if "127.0.0.1" in url:
-                        fallback_url = url.replace("127.0.0.1", "localhost")
-                    elif "localhost" in url:
-                        fallback_url = url.replace("localhost", "127.0.0.1")
-                    if fallback_url:
-                        fallback_req = urllib.request.Request(
-                            fallback_url, data=data, method=self.command, headers=req.headers
-                        )
-                        resp_cm = urllib.request.urlopen(fallback_req)
-                    else:
-                        raise conn_err
+                resp_cm = None
+                max_attempts = 3
+                last_err = None
+                for attempt in range(max_attempts):
+                    try:
+                        resp_cm = urllib.request.urlopen(req)
+                        break
+                    except (urllib.error.URLError, TimeoutError) as conn_err:
+                        last_err = conn_err
+                        # Fallback between 127.0.0.1 and localhost if IPv4/IPv6 loopback differs
+                        fallback_url = None
+                        if "127.0.0.1" in url:
+                            fallback_url = url.replace("127.0.0.1", "localhost")
+                        elif "localhost" in url:
+                            fallback_url = url.replace("localhost", "127.0.0.1")
+                        if fallback_url:
+                            try:
+                                fallback_req = urllib.request.Request(
+                                    fallback_url, data=data, method=self.command, headers=req.headers
+                                )
+                                resp_cm = urllib.request.urlopen(fallback_req)
+                                break
+                            except (urllib.error.URLError, TimeoutError) as fb_err:
+                                last_err = fb_err
+                        if attempt < max_attempts - 1:
+                            time.sleep(0.2 * (attempt + 1))
+                if resp_cm is None:
+                    raise last_err
 
                 with resp_cm as resp:
                     resp_body = resp.read()
@@ -377,7 +390,10 @@ def make_handler(token: str, target: str) -> type[BaseHTTPRequestHandler]:
                     return
                 raise
             except Exception as e:
-                logger.exception("Proxy upstream forwarding error")
+                if isinstance(e, (urllib.error.URLError, TimeoutError, ConnectionRefusedError)):
+                    logger.error("Proxy upstream connection failed for %s %s: %s", self.command, self.path, e)
+                else:
+                    logger.exception("Proxy upstream forwarding error")
                 try:
                     err_bytes = json.dumps({"error": f"Bad Gateway: {e}"}).encode("utf-8")
                     self.send_response(502)
@@ -438,7 +454,7 @@ def main() -> None:
     listen_port = int(os.environ.get("PROXY_PORT", "3210"))
     if _allowed_origins() == ("*",):
         print(
-            "WARNING: QMD_ALLOWED_ORIGINS=* — Origin passthrough (fail-open). "
+            "INFO: QMD_ALLOWED_ORIGINS=* — Origin passthrough (fail-open). "
             "Set QMD_ALLOWED_ORIGINS=https://claude.ai to 403 spoofed Origins in proxy.",
             file=sys.stderr,
         )
