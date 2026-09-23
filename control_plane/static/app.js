@@ -62,6 +62,18 @@ async function fetchStatus() {
     updateBadge("badge-tunnel", data.services.tunnel.ok);
     updateBadge("badge-mirror", data.services.mirror.ok);
 
+    if (data.services.bot_gateway) {
+      const botBadge = document.getElementById("badge-bot");
+      if (botBadge) {
+        if (!data.services.bot_gateway.configured) {
+          botBadge.className = "badge badge-gray";
+          botBadge.innerText = "Not Configured";
+        } else {
+          updateBadge("badge-bot", data.services.bot_gateway.ok);
+        }
+      }
+    }
+
     // Update Mirror Link
     if (data.services.mirror.url) {
       document.getElementById("link-mirror").href = data.services.mirror.url;

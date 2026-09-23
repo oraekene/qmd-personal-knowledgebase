@@ -546,6 +546,30 @@ class DaemonSupervisor:
                     self.logger.log("TUNNEL", f"Failed to launch Cloudflare Tunnel: {e}", level="ERROR")
                     return {"status": "error", "name": "tunnel", "message": str(e)}
 
+            elif name == "bot_gateway":
+                token = env.get("TELEGRAM_BOT_TOKEN", "").strip()
+                if not token:
+                    self.logger.log("BOT_GATEWAY", "TELEGRAM_BOT_TOKEN not configured in .env", level="WARNING")
+                cmd = [sys.executable, "-u", "-m", "gateways.bot_gateway"]
+                try:
+                    proc = subprocess.Popen(
+                        cmd,
+                        cwd=str(self.repo_root),
+                        env=env,
+                        shell=use_shell,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                        bufsize=1,
+                    )
+                    self.processes["bot_gateway"] = proc
+                    _stream_output(proc, "BOT_GATEWAY", self.logger)
+                    self.logger.log("BOT_GATEWAY", f"Bot Gateway daemon launched (PID {proc.pid})")
+                    return {"status": "started", "name": "bot_gateway", "pid": proc.pid}
+                except Exception as e:
+                    self.logger.log("BOT_GATEWAY", f"Failed to launch Bot Gateway: {e}", level="ERROR")
+                    return {"status": "error", "name": "bot_gateway", "message": str(e)}
+
             return {"status": "unknown_daemon", "name": name}
 
     def stop_daemon(self, name: str) -> Dict[str, Any]:
@@ -700,6 +724,9 @@ def make_control_plane_handler(
                 inbox_stats = get_inbox_stats(repo_root / "inbox")
                 task_status = runner.get_status()
 
+                bot_running = bool(supervisor.processes.get("bot_gateway") and supervisor.processes["bot_gateway"].poll() is None)
+                bot_configured = bool(env_dict.get("TELEGRAM_BOT_TOKEN", "").strip())
+
                 data = {
                     "retrieval_mode": retrieval_mode,
                     "services": {
@@ -707,6 +734,11 @@ def make_control_plane_handler(
                         "auth_proxy": {"ok": proxy_ok, "port": 3210, "name": "Auth Proxy (OAuth)"},
                         "tunnel": {"ok": tunnel_ok, "url": tunnel_url, "name": "Cloudflare Tunnel"},
                         "mirror": {"ok": mirror_ok, "url": mirror_user_url, "name": "Static Web Mirror"},
+                        "bot_gateway": {
+                            "ok": bot_running,
+                            "name": "Telegram Bot Gateway",
+                            "configured": bot_configured,
+                        },
                     },
                     "corpus": corpus_stats,
                     "inbox": inbox_stats,

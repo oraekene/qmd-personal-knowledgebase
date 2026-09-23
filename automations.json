@@ -8,10 +8,10 @@
       "params": {},
       "tier": "local",
       "enabled": true,
-      "last_run_at": "2026-09-22T21:00:09.220868+00:00",
+      "last_run_at": "2026-09-23T10:19:01.496495+00:00",
       "last_status": "failed",
       "last_error": "Execution timed out after 300 seconds.",
-      "next_run_at": "2026-09-22T21:30:09.220868+00:00"
+      "next_run_at": "2026-09-23T10:49:01.496495+00:00"
     },
     {
       "id": "job_cloudflare_sync",
@@ -21,10 +21,10 @@
       "params": {},
       "tier": "local",
       "enabled": true,
-      "last_run_at": "2026-09-22T21:00:09.220868+00:00",
-      "last_status": "failed",
-      "last_error": "Unknown sandbox action: 'cloudflare_sync'",
-      "next_run_at": "2026-09-22T21:30:09.220868+00:00"
+      "last_run_at": "2026-09-23T10:19:01.496495+00:00",
+      "last_status": "success",
+      "last_error": null,
+      "next_run_at": "2026-09-23T10:49:01.496495+00:00"
     },
     {
       "id": "job_github_sync",
@@ -34,10 +34,10 @@
       "params": {},
       "tier": "local",
       "enabled": true,
-      "last_run_at": "2026-09-22T15:39:12.685638+00:00",
-      "last_status": "ready",
-      "last_error": null,
-      "next_run_at": "2026-09-23T02:00:00+00:00"
+      "last_run_at": "2026-09-23T09:03:12.864315+00:00",
+      "last_status": "failed",
+      "last_error": "Execution failed",
+      "next_run_at": "2026-09-24T02:00:00+00:00"
     },
     {
       "id": "job_reindex",
@@ -47,10 +47,10 @@
       "params": {},
       "tier": "local",
       "enabled": true,
-      "last_run_at": "2026-09-22T15:39:12.685638+00:00",
-      "last_status": "ready",
+      "last_run_at": "2026-09-23T09:03:12.864315+00:00",
+      "last_status": "success",
       "last_error": null,
-      "next_run_at": "2026-09-23T03:00:00+00:00"
+      "next_run_at": "2026-09-24T03:00:00+00:00"
     },
     {
       "id": "job_deploy_mirror",
@@ -60,10 +60,10 @@
       "params": {},
       "tier": "local",
       "enabled": true,
-      "last_run_at": "2026-09-22T15:39:12.685638+00:00",
-      "last_status": "ready",
-      "last_error": null,
-      "next_run_at": "2026-09-23T04:00:00+00:00"
+      "last_run_at": "2026-09-23T09:03:12.864315+00:00",
+      "last_status": "failed",
+      "last_error": "Traceback (most recent call last):\n  File \"C:\\Users\\rotim\\Documents\\QMD powered Personal Knowledgebase and Search Engine\\scripts\\build_mirror.py\", line 24, in <module>\n    from scripts import is_excluded\nModuleNotFoundError: No module named 'scripts'\n",
+      "next_run_at": "2026-09-24T04:00:00+00:00"
     },
     {
       "id": "job_compile_wiki",

@@ -34,7 +34,12 @@ import urllib.request
 from typing import Dict, List, Tuple
 
 
-from scripts import is_excluded
+try:
+    from scripts import is_excluded
+except ImportError:
+    import sys
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+    from scripts import is_excluded
 
 DEFAULT_PROMPT_BUDGET_CHARS = 200_000
 COMPILE_CONCURRENCY = 5

@@ -21,7 +21,12 @@ import time
 import uuid
 from typing import List
 
-from scripts import is_excluded
+try:
+    from scripts import is_excluded
+except ImportError:
+    import sys
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+    from scripts import is_excluded
 
 _TOKEN_HEX_RE = re.compile(r"^[0-9a-fA-F]+$")
 _MIRROR_LOCK = threading.Lock()

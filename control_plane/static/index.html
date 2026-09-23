@@ -111,7 +111,7 @@
           </div>
         </div>
 
-        <div class="grid grid-4" id="services-grid">
+        <div class="grid grid-5" id="services-grid">
           <!-- QMD MCP Server Card -->
           <div class="card status-card" id="card-qmd">
             <div class="card-header">
@@ -173,6 +173,22 @@
             </div>
             <div class="card-footer">
               <a id="link-mirror" href="https://qmd-mirror.pages.dev" target="_blank" class="btn btn-xs btn-outline">Open Mirror</a>
+            </div>
+          </div>
+
+          <!-- Telegram Bot Gateway Card -->
+          <div class="card status-card" id="card-bot">
+            <div class="card-header">
+              <span class="card-title">Telegram Bot Gateway</span>
+              <span class="badge badge-gray" id="badge-bot">Checking...</span>
+            </div>
+            <div class="card-body">
+              <p class="meta-label">Type: <strong>Long-Polling Daemon</strong></p>
+              <p class="meta-desc">Bi-directional Telegram bot for remote search & agent inbox.</p>
+            </div>
+            <div class="card-footer">
+              <button class="btn btn-xs btn-outline" onclick="controlDaemon('bot_gateway', 'start')">Start</button>
+              <button class="btn btn-xs btn-outline" onclick="controlDaemon('bot_gateway', 'restart')">Restart</button>
             </div>
           </div>
         </div>

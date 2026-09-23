@@ -9,6 +9,7 @@ from gateways.bot_gateway import (
     DiscordBotHandler,
     TelegramBotHandler,
     generate_openapi_schema,
+    run_telegram_polling,
 )
 
 
@@ -89,3 +90,64 @@ def test_openapi_schema_generation():
     assert "/api/connectors/reach" in schema["paths"]
     assert "/api/sync/status" in schema["paths"]
     assert "BearerAuth" in schema["components"]["securitySchemes"]
+
+
+def test_run_telegram_polling_no_token(tmp_path, caplog):
+    # When no token is configured, it warns and returns early
+    run_telegram_polling(token="", repo_root=tmp_path, max_loops=1)
+    assert any("TELEGRAM_BOT_TOKEN not configured" in rec.message for rec in caplog.records)
+
+
+def test_run_telegram_polling_success(tmp_path):
+    # Mock urllib request / response for getUpdates and sendMessage
+    import io
+    import json
+    
+    updates_payload = {
+        "ok": True,
+        "result": [
+            {
+                "update_id": 999,
+                "message": {
+                    "chat": {"id": 42},
+                    "text": "/start",
+                },
+            }
+        ],
+    }
+    
+    mock_resp = io.BytesIO(json.dumps(updates_payload).encode("utf-8"))
+    
+    with patch("urllib.request.urlopen") as mock_urlopen:
+        mock_urlopen.return_value.__enter__.return_value = mock_resp
+        
+        run_telegram_polling(
+            token="test-token-123",
+            repo_root=tmp_path,
+            poll_interval=0.01,
+            max_loops=1,
+        )
+        
+        assert mock_urlopen.call_count >= 1
+
+
+def test_supervisor_bot_gateway_lifecycle(tmp_path):
+    from control_plane.server import DaemonSupervisor, SystemLogger
+    logger = SystemLogger(repo_root=tmp_path)
+    supervisor = DaemonSupervisor(repo_root=tmp_path, logger=logger)
+    
+    # Mock subprocess.Popen
+    mock_proc = MagicMock()
+    mock_proc.pid = 9876
+    mock_proc.poll.return_value = None
+    mock_proc.stdout.readline.return_value = ""
+    
+    with patch("subprocess.Popen", return_value=mock_proc):
+        res = supervisor.start_daemon("bot_gateway")
+        assert res["status"] == "started"
+        assert res["pid"] == 9876
+        assert "bot_gateway" in supervisor.processes
+        
+        stop_res = supervisor.stop_daemon("bot_gateway")
+        assert stop_res["status"] == "stopped"
+

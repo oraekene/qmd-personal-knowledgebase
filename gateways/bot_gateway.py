@@ -12,8 +12,12 @@ import json
 import logging
 import os
 import re
+import sys
+import time
 from pathlib import Path
 from typing import Any, Dict, Optional
+import urllib.error
+import urllib.request
 
 logger = logging.getLogger("bot_gateway")
 
@@ -295,3 +299,74 @@ def generate_openapi_schema(base_url: str = "https://kb.parmeterai.space") -> Di
         },
         "security": [{"BearerAuth": []}],
     }
+
+
+def run_telegram_polling(
+    token: str | None = None,
+    repo_root: Path | None = None,
+    poll_interval: float = 2.0,
+    stop_event: Any | None = None,
+    max_loops: int | None = None,
+) -> None:
+    """Long-polling daemon runner for Telegram Bot."""
+    root = repo_root or REPO_ROOT
+    from control_plane.server import read_env_dict
+    env = read_env_dict(root / ".env")
+    bot_token = token or env.get("TELEGRAM_BOT_TOKEN") or os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    if not bot_token:
+        logger.warning("TELEGRAM_BOT_TOKEN not configured in .env. Bot gateway cannot poll.")
+        return
+
+    handler = TelegramBotHandler(repo_root=root)
+    offset = 0
+    logger.info("Telegram polling daemon started for QMD Knowledgebase.")
+    loop_count = 0
+
+    while True:
+        if stop_event and stop_event.is_set():
+            logger.info("Stop event received, terminating Telegram bot polling.")
+            break
+        if max_loops is not None and loop_count >= max_loops:
+            break
+        loop_count += 1
+
+        url = f"https://api.telegram.org/bot{bot_token}/getUpdates?offset={offset}&timeout=10"
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "QMD-Bot/1.0"})
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                if data.get("ok"):
+                    for update in data.get("result", []):
+                        update_id = update.get("update_id", 0)
+                        offset = max(offset, update_id + 1)
+                        result = handler.handle_update(update)
+                        if result.get("status") == "handled" and result.get("chat_id") and result.get("reply"):
+                            chat_id = result["chat_id"]
+                            reply = result["reply"]
+                            send_url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+                            send_payload = json.dumps({
+                                "chat_id": chat_id,
+                                "text": reply,
+                                "parse_mode": "Markdown",
+                            }).encode("utf-8")
+                            send_req = urllib.request.Request(
+                                send_url,
+                                data=send_payload,
+                                headers={"Content-Type": "application/json", "User-Agent": "QMD-Bot/1.0"},
+                                method="POST",
+                            )
+                            try:
+                                with urllib.request.urlopen(send_req, timeout=10):
+                                    pass
+                            except Exception as se:
+                                logger.warning("Failed to send Telegram message to chat %s: %s", chat_id, se)
+        except Exception as e:
+            logger.debug("Telegram polling error or timeout: %s", e)
+
+        time.sleep(poll_interval)
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+    run_telegram_polling()
+
