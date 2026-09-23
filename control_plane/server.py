@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import socket
 import subprocess
 import sys
@@ -765,6 +766,21 @@ def make_control_plane_handler(
                 self.send_json(200, {"config": env_dict})
                 return
 
+            if path == "/api/onboarding/status":
+                env_dict = read_env_dict(repo_root / ".env")
+                has_auth = bool(env_dict.get("AUTH_PROXY_TOKEN", "").strip())
+                has_mirror = bool(env_dict.get("MIRROR_TOKEN", "").strip())
+                operational_mode = env_dict.get("OPERATIONAL_MODE", "full").lower()
+                needs_setup = not (has_auth and has_mirror)
+                self.send_json(200, {
+                    "needs_setup": needs_setup,
+                    "has_auth_token": has_auth,
+                    "has_mirror_token": has_mirror,
+                    "operational_mode": operational_mode,
+                    "configured_keys": [k for k, v in env_dict.items() if v.strip()],
+                })
+                return
+
             if path == "/api/prompts":
                 from auth_proxy.prompt_engine import (
                     list_prompts,
@@ -1027,6 +1043,51 @@ def make_control_plane_handler(
                 write_env_dict(repo_root / ".env", updates)
                 system_logger.log_user_action("CONFIG_UPDATE", {"keys": list(updates.keys())})
                 self.send_json(200, {"status": "saved", "count": len(updates)})
+                return
+
+            if path == "/api/onboarding/quickstart":
+                try:
+                    payload = json.loads(body.decode("utf-8")) if body else {}
+                except Exception:
+                    self.send_json(400, {"error": "Invalid JSON"})
+                    return
+
+                mode = payload.get("mode", "offline-only").lower()
+                allowed_modes = {"offline-only", "offline+cloudflare-wiki", "full"}
+                if mode not in allowed_modes:
+                    self.send_json(400, {"error": f"Invalid operational mode: {mode}. Allowed: {sorted(list(allowed_modes))}"})
+                    return
+
+                auto_tokens = payload.get("auto_generate_tokens", True)
+                env_dict = read_env_dict(repo_root / ".env")
+                updates: Dict[str, str] = {"OPERATIONAL_MODE": mode}
+
+                generated = []
+                if auto_tokens:
+                    if not env_dict.get("AUTH_PROXY_TOKEN") or payload.get("force_regenerate"):
+                        token = secrets.token_hex(16)
+                        updates["AUTH_PROXY_TOKEN"] = token
+                        generated.append("AUTH_PROXY_TOKEN")
+                    if not env_dict.get("MIRROR_TOKEN") or payload.get("force_regenerate"):
+                        token = secrets.token_hex(16)
+                        updates["MIRROR_TOKEN"] = token
+                        generated.append("MIRROR_TOKEN")
+
+                # If user passed custom tokens
+                custom_tokens = payload.get("tokens", {})
+                if isinstance(custom_tokens, dict):
+                    for k, v in custom_tokens.items():
+                        if isinstance(v, str) and v.strip():
+                            updates[k] = v.strip()
+
+                write_env_dict(repo_root / ".env", updates)
+                system_logger.log_user_action("ONBOARDING_QUICKSTART", {"mode": mode, "generated": generated, "keys": list(updates.keys())})
+                self.send_json(200, {
+                    "status": "configured",
+                    "operational_mode": mode,
+                    "generated_tokens": generated,
+                    "message": "Onboarding completed successfully!",
+                })
                 return
 
             if path == "/api/prompts":

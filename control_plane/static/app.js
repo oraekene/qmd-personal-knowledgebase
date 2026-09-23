@@ -25,6 +25,11 @@ document.addEventListener("DOMContentLoaded", () => {
   pollLogs();
   setInterval(pollLogs, 1500);
 
+  // Check first-run onboarding status
+  checkOnboardingStatus();
+
+  const btnWizard = document.getElementById("btn-open-wizard");
+  if (btnWizard) btnWizard.addEventListener("click", openWizard);
   document.getElementById("btn-open-prompts").addEventListener("click", openPrompts);
   document.getElementById("btn-open-settings").addEventListener("click", openSettings);
   document.getElementById("btn-start-all-daemons").addEventListener("click", () => controlDaemon("all", "restart"));
@@ -1371,7 +1376,162 @@ async function runPiGoal() {
       }
     }, 1000);
   }
+// Onboarding / Quickstart Wizard Controller
+let selectedWizardMode = "offline-only";
+let currentWizardStep = 1;
+
+async function checkOnboardingStatus() {
+  try {
+    const res = await fetch("/api/onboarding/status");
+    if (!res.ok) return;
+    const data = await res.json();
+    const banner = document.getElementById("onboarding-banner");
+    if (data.needs_setup) {
+      if (banner) banner.style.display = "flex";
+    } else {
+      if (banner) banner.style.display = "none";
+    }
+  } catch (e) {
+    console.error("Error checking onboarding status:", e);
+  }
 }
 
+function openWizard() {
+  currentWizardStep = 1;
+  goToWizardStep(1);
+  const modal = document.getElementById("onboarding-modal");
+  if (modal) modal.style.display = "flex";
+}
 
+function closeWizard() {
+  const modal = document.getElementById("onboarding-modal");
+  if (modal) modal.style.display = "none";
+}
 
+function dismissOnboardingBanner() {
+  const banner = document.getElementById("onboarding-banner");
+  if (banner) banner.style.display = "none";
+}
+
+function setWizardMode(mode) {
+  selectedWizardMode = mode;
+  ["offline-only", "offline+cloudflare-wiki", "full"].forEach(m => {
+    const card = document.getElementById(m === "offline-only" ? "wcard-offline-only" : m === "offline+cloudflare-wiki" ? "wcard-offline-wiki" : "wcard-full");
+    if (card) {
+      if (m === mode) {
+        card.classList.add("selected");
+        const radio = card.querySelector("input[type=radio]");
+        if (radio) radio.checked = true;
+      } else {
+        card.classList.remove("selected");
+      }
+    }
+  });
+
+  const summaryMode = document.getElementById("wizard-summary-mode");
+  if (summaryMode) {
+    if (mode === "offline-only") {
+      summaryMode.className = "badge badge-green";
+      summaryMode.innerText = "🔒 100% Offline Only";
+    } else if (mode === "offline+cloudflare-wiki") {
+      summaryMode.className = "badge badge-yellow";
+      summaryMode.innerText = "🧠 Offline Search + Cloudflare Wiki";
+    } else {
+      summaryMode.className = "badge badge-primary";
+      summaryMode.innerText = "🌐 Full Cloud Connected";
+    }
+  }
+}
+
+function goToWizardStep(step) {
+  currentWizardStep = step;
+  [1, 2, 3].forEach(s => {
+    const pane = document.getElementById(`wizard-pane-${s}`);
+    const ind = document.getElementById(`wizard-step-ind-${s}`);
+    if (pane) pane.style.display = (s === step) ? "block" : "none";
+    if (ind) {
+      if (s === step) {
+        ind.classList.add("active");
+      } else {
+        ind.classList.remove("active");
+      }
+    }
+  });
+
+  // Update step 3 summary if entering step 3
+  if (step === 3) {
+    const autoKeys = document.getElementById("wizard-auto-keys")?.checked ?? true;
+    const summaryTokens = document.getElementById("wizard-summary-tokens");
+    if (summaryTokens) {
+      summaryTokens.innerText = autoKeys ? "⚡ Auto-Generated (Secure 256-bit Hex)" : "Custom User-Provided";
+    }
+
+    const tgVal = document.getElementById("wizard-telegram-token")?.value.trim() || "";
+    const summaryBot = document.getElementById("wizard-summary-bot");
+    if (summaryBot) {
+      summaryBot.innerText = tgVal ? "Configured (Long-Polling Active)" : "Not configured (can add anytime)";
+      summaryBot.style.color = tgVal ? "var(--success)" : "var(--text-muted)";
+    }
+  }
+}
+
+function toggleWizardAutoKeys() {
+  const isAuto = document.getElementById("wizard-auto-keys")?.checked ?? true;
+  const manualBox = document.getElementById("wizard-manual-keys");
+  if (manualBox) {
+    manualBox.style.display = isAuto ? "none" : "block";
+  }
+}
+
+async function completeWizard() {
+  const btn = document.getElementById("btn-wizard-finish");
+  if (btn) {
+    btn.disabled = true;
+    btn.innerText = "Configuring Engine...";
+  }
+
+  const autoKeys = document.getElementById("wizard-auto-keys")?.checked ?? true;
+  const customAuth = document.getElementById("wizard-custom-auth-token")?.value.trim() || "";
+  const customMirror = document.getElementById("wizard-custom-mirror-token")?.value.trim() || "";
+  const telegramToken = document.getElementById("wizard-telegram-token")?.value.trim() || "";
+
+  const customTokens = {};
+  if (!autoKeys) {
+    if (customAuth) customTokens["AUTH_PROXY_TOKEN"] = customAuth;
+    if (customMirror) customTokens["MIRROR_TOKEN"] = customMirror;
+  }
+  if (telegramToken) {
+    customTokens["TELEGRAM_BOT_TOKEN"] = telegramToken;
+  }
+
+  try {
+    const res = await fetch("/api/onboarding/quickstart", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        mode: selectedWizardMode,
+        auto_generate_tokens: autoKeys,
+        tokens: customTokens,
+      }),
+    });
+    const data = await res.json();
+    if (res.ok) {
+      showToast("Knowledgebase setup completed successfully! Starting services...");
+      closeWizard();
+      dismissOnboardingBanner();
+      // Reload daemons with the new configuration
+      controlDaemon("all", "restart");
+      fetchStatus();
+      fetchOperationalMode();
+    } else {
+      showToast(data.error || "Setup failed", true);
+    }
+  } catch (e) {
+    showToast(`Error completing setup: ${e}`, true);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerText = "🚀 Finish Setup & Launch Knowledgebase";
+    }
+  }
+}

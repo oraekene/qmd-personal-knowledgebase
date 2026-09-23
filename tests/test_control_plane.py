@@ -424,6 +424,36 @@ def test_control_plane_http_server(tmp_path: Path):
             res = json.loads(resp.read().decode())
             assert res["status"] == "deleted"
 
+        # 24. GET /api/onboarding/status & POST /api/onboarding/quickstart
+        with urllib.request.urlopen(f"{base_url}/api/onboarding/status") as resp:
+            assert resp.status == 200
+            data = json.loads(resp.read().decode())
+            assert "needs_setup" in data
+            assert "operational_mode" in data
+
+        quickstart_req = urllib.request.Request(
+            f"{base_url}/api/onboarding/quickstart",
+            data=json.dumps({
+                "mode": "offline-only",
+                "auto_generate_tokens": True,
+                "force_regenerate": True,
+            }).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(quickstart_req) as resp:
+            assert resp.status == 200
+            res = json.loads(resp.read().decode())
+            assert res["status"] == "configured"
+            assert res["operational_mode"] == "offline-only"
+            assert "AUTH_PROXY_TOKEN" in res["generated_tokens"]
+            assert "MIRROR_TOKEN" in res["generated_tokens"]
+
+        env_after_quickstart = read_env_dict(env_file)
+        assert env_after_quickstart["OPERATIONAL_MODE"] == "offline-only"
+        assert len(env_after_quickstart["AUTH_PROXY_TOKEN"]) == 32
+        assert len(env_after_quickstart["MIRROR_TOKEN"]) == 32
+
     finally:
         server.shutdown()
         server.server_close()

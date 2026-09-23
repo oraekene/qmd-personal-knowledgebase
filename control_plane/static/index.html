@@ -18,12 +18,28 @@
         </div>
       </div>
       <div class="header-actions">
+        <button id="btn-open-wizard" class="btn btn-outline" style="border-color: var(--accent); color: var(--accent-light);">✨ Setup Wizard</button>
         <a href="#section-automations" class="btn btn-secondary" style="text-decoration: none; display: inline-flex; align-items: center;">⚡ Automations</a>
         <button id="btn-open-prompts" class="btn btn-secondary">🎭 Persona & Prompts</button>
         <button id="btn-open-settings" class="btn btn-secondary">⚙️ Settings & Secrets</button>
         <button id="btn-start-all-daemons" class="btn btn-primary">⚡ Start All Daemons</button>
       </div>
     </header>
+
+    <!-- First-Run Onboarding Banner (shown when setup needed) -->
+    <div id="onboarding-banner" style="display: none; background: linear-gradient(90deg, #1e3a8a, #0f172a); border-bottom: 1px solid var(--accent); padding: 10px 24px; color: #fff; align-items: center; justify-content: space-between;">
+      <div style="display: flex; align-items: center; gap: 12px;">
+        <span style="font-size: 1.3rem;">🚀</span>
+        <div>
+          <strong>Welcome to your Autonomous Knowledgebase!</strong>
+          <span style="color: var(--text-muted); font-size: 0.85rem; margin-left: 8px;">Run the 1-click onboarding wizard to choose your privacy mode and generate security keys.</span>
+        </div>
+      </div>
+      <div style="display: flex; gap: 8px;">
+        <button class="btn btn-sm btn-primary" onclick="openWizard()">Launch Setup Wizard</button>
+        <button class="btn btn-sm btn-outline" onclick="dismissOnboardingBanner()">Dismiss</button>
+      </div>
+    </div>
 
     <main class="main-content">
       <!-- Section 1: Service Status Cards & Engine Mode -->
@@ -529,6 +545,125 @@
         </div>
       </section>
     </main>
+
+    <!-- Onboarding / Quickstart Wizard Modal -->
+    <div class="modal" id="onboarding-modal" style="display:none;">
+      <div class="modal-overlay" onclick="closeWizard()"></div>
+      <div class="modal-dialog" style="max-width: 680px;">
+        <div class="modal-header">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="font-size: 1.3rem;">✨</span>
+            <h3 style="margin: 0;">Interactive Setup & Onboarding Wizard</h3>
+          </div>
+          <button class="btn-close" onclick="closeWizard()">&times;</button>
+        </div>
+        <div class="modal-body" style="padding: 20px;">
+          <!-- Wizard Step Indicator -->
+          <div class="wizard-steps" style="display: flex; justify-content: space-between; margin-bottom: 24px; position: relative;">
+            <div class="wizard-step active" id="wizard-step-ind-1">
+              <span class="step-num">1</span>
+              <span class="step-label">Operational Mode</span>
+            </div>
+            <div class="wizard-step" id="wizard-step-ind-2">
+              <span class="step-num">2</span>
+              <span class="step-label">Security & Keys</span>
+            </div>
+            <div class="wizard-step" id="wizard-step-ind-3">
+              <span class="step-num">3</span>
+              <span class="step-label">Launch Engine</span>
+            </div>
+          </div>
+
+          <!-- Step 1: Mode Selection -->
+          <div id="wizard-pane-1" class="wizard-pane">
+            <h4 style="margin: 0 0 8px 0;">Step 1: Choose Your Architecture & Privacy Level</h4>
+            <p class="meta-desc" style="margin-bottom: 16px;">Select how you want QMD Knowledgebase to operate across local and cloud environments:</p>
+            <div style="display: flex; flex-direction: column; gap: 12px; margin-bottom: 20px;">
+              <label class="wizard-mode-card selected" id="wcard-offline-only" onclick="setWizardMode('offline-only')">
+                <input type="radio" name="wizard-mode" value="offline-only" checked style="margin-top: 3px;">
+                <div>
+                  <strong>🔒 100% Offline Only (Air-gapped & Private)</strong>
+                  <p class="meta-desc" style="margin: 4px 0 0 0;">Zero cloud dependencies. Local GGUF models via llama.cpp + local Pi ReAct agent + SQLite index. No tokens or cloud accounts required.</p>
+                </div>
+              </label>
+
+              <label class="wizard-mode-card" id="wcard-offline-wiki" onclick="setWizardMode('offline+cloudflare-wiki')">
+                <input type="radio" name="wizard-mode" value="offline+cloudflare-wiki" style="margin-top: 3px;">
+                <div>
+                  <strong>🧠 Hybrid: Local Search + Cloudflare Workers AI</strong>
+                  <p class="meta-desc" style="margin: 4px 0 0 0;">Fast local on-device search combined with Cloudflare Workers AI to automatically synthesize cross-silo research wikis and topic indexes.</p>
+                </div>
+              </label>
+
+              <label class="wizard-mode-card" id="wcard-full" onclick="setWizardMode('full')">
+                <input type="radio" name="wizard-mode" value="full" style="margin-top: 3px;">
+                <div>
+                  <strong>🌐 Full Cloud-Connected (Multi-Device & Sync)</strong>
+                  <p class="meta-desc" style="margin: 4px 0 0 0;">Full resilience: Cloudflare Artifacts (Git markdown versioning) + Cloudflare R2 binary snapshots + remote Claude.ai / mobile bot connectivity.</p>
+                </div>
+              </label>
+            </div>
+            <div style="display: flex; justify-content: flex-end;">
+              <button type="button" class="btn btn-primary" onclick="goToWizardStep(2)">Next: Security & Keys →</button>
+            </div>
+          </div>
+
+          <!-- Step 2: Security & Keys -->
+          <div id="wizard-pane-2" class="wizard-pane" style="display: none;">
+            <h4 style="margin: 0 0 8px 0;">Step 2: Security & Remote Credentials</h4>
+            <p class="meta-desc" style="margin-bottom: 16px;">Configure your authentication tokens. QMD can auto-generate secure 256-bit random keys for you:</p>
+
+            <div style="background: rgba(16, 185, 129, 0.08); border: 1px solid var(--success); border-radius: 6px; padding: 12px; margin-bottom: 16px;">
+              <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 0.9rem; font-weight: 600;">
+                <input type="checkbox" id="wizard-auto-keys" checked onchange="toggleWizardAutoKeys()">
+                <span>⚡ 1-Click Auto-generate secure tokens (AUTH_PROXY_TOKEN & MIRROR_TOKEN)</span>
+              </label>
+              <span class="meta-desc" style="display: block; margin: 4px 0 0 24px; font-size: 0.78rem;">Creates high-entropy hexadecimal keys and secures your local MCP server and static mirror.</span>
+            </div>
+
+            <div id="wizard-manual-keys" style="display: none; margin-bottom: 16px;">
+              <div class="form-group" style="margin-bottom: 10px;">
+                <label style="font-size: 0.8rem;">Master Auth Proxy Token (Custom):</label>
+                <input type="password" id="wizard-custom-auth-token" class="input-text" placeholder="Leave blank to auto-generate">
+              </div>
+              <div class="form-group" style="margin-bottom: 10px;">
+                <label style="font-size: 0.8rem;">Static Mirror Token (Custom):</label>
+                <input type="password" id="wizard-custom-mirror-token" class="input-text" placeholder="Leave blank to auto-generate">
+              </div>
+            </div>
+
+            <div class="form-group" style="margin-bottom: 12px;">
+              <label style="font-size: 0.8rem;">Telegram Bot Token (Optional, for remote mobile chat):</label>
+              <input type="password" id="wizard-telegram-token" class="input-text" placeholder="123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11">
+              <span class="meta-desc" style="font-size: 0.75rem;">Can be added later in Settings & Secrets.</span>
+            </div>
+
+            <div style="display: flex; justify-content: space-between; margin-top: 20px;">
+              <button type="button" class="btn btn-secondary" onclick="goToWizardStep(1)">← Back</button>
+              <button type="button" class="btn btn-primary" onclick="goToWizardStep(3)">Next: Review & Launch →</button>
+            </div>
+          </div>
+
+          <!-- Step 3: Review & Launch -->
+          <div id="wizard-pane-3" class="wizard-pane" style="display: none;">
+            <h4 style="margin: 0 0 8px 0;">Step 3: Verification & Instant Launch</h4>
+            <p class="meta-desc" style="margin-bottom: 16px;">Confirm your setup configuration:</p>
+
+            <div style="background: rgba(0,0,0,0.3); border: 1px solid var(--border); border-radius: 8px; padding: 14px; margin-bottom: 20px; font-size: 0.88rem;">
+              <div style="margin-bottom: 8px;"><strong>Selected Mode:</strong> <span id="wizard-summary-mode" class="badge badge-green">Offline Only</span></div>
+              <div style="margin-bottom: 8px;"><strong>Security Master Tokens:</strong> <span id="wizard-summary-tokens" style="color: var(--accent);">Auto-Generated (Secure 256-bit Hex)</span></div>
+              <div style="margin-bottom: 8px;"><strong>Remote Telegram Gateway:</strong> <span id="wizard-summary-bot" style="color: var(--text-muted);">Not configured (can add anytime)</span></div>
+              <div><strong>Core Daemons:</strong> <span style="color: var(--success);">Will automatically launch upon configuration</span></div>
+            </div>
+
+            <div style="display: flex; justify-content: space-between;">
+              <button type="button" class="btn btn-secondary" onclick="goToWizardStep(2)">← Back</button>
+              <button type="button" class="btn btn-primary" id="btn-wizard-finish" onclick="completeWizard()">🚀 Finish Setup & Launch Knowledgebase</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
 
     <!-- Settings Modal -->
     <div class="modal" id="settings-modal" style="display:none;">
