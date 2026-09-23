@@ -77,3 +77,23 @@ _Avoid_: enrichment, post-processing, indexing
 The tool (llm-wiki-compiler or successor) that performs the Synthesis Pass.
 The only LLM-calling component in the ingestion pipeline.
 _Avoid_: knowledge graph engine, memory platform
+
+**Cloudflare Artifacts**:
+Git-compatible edge repository managing markdown corpus versioning, commits, and rollbacks without Git bloat in the main codebase repo.
+_Avoid_: git submodules, git repo
+
+**Cloudflare R2**:
+S3-compatible zero-egress object storage for pre-computed vector databases (.qmd.db) and heavy media assets.
+_Avoid_: blob storage, s3 bucket
+
+**Cloud Sandbox**:
+Ephemeral remote microVM (Modal or E2B) running heavy off-PC ingestion, transcription, or wiki compilation.
+_Avoid_: cloud worker, container cluster
+
+**Visual Execution Trace**:
+Real-time step timeline graph in the Web Control Plane visualizing ReAct thoughts, tool calls, observations, and answers.
+_Avoid_: call stack, trace log
+
+**Bot Gateway**:
+Background long-polling daemon exposing QMD search and Pi Agent reasoning to Telegram and Discord.
+_Avoid_: chatbot, webhook receiver
