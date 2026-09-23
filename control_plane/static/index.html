@@ -290,9 +290,27 @@
               <input type="text" id="input-pi-prompt" placeholder="Ask a question, request research, or describe a multi-step task across your knowledgebase..." style="flex: 1; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.15); border-radius: 6px; padding: 8px 14px; color: var(--text); font-size: 0.92rem;">
               <button class="btn btn-primary" id="btn-run-pi-goal" onclick="runPiGoal()">⚡ Execute Goal</button>
             </div>
-            <div id="pi-progress-bar" style="display: none; height: 3px; background: linear-gradient(90deg, var(--primary), var(--accent)); border-radius: 2px;"></div>
-            <div style="background: rgba(0,0,0,0.35); border: 1px solid rgba(255,255,255,0.08); border-radius: 6px; padding: 12px; min-height: 120px; max-height: 350px; overflow-y: auto; font-family: monospace; font-size: 0.85rem;" id="pi-output-container">
-              <span style="color: var(--text-muted);">Pi Agent is idle. Enter a prompt above to trigger the ReAct autonomous loop.</span>
+            <!-- View Mode Switcher & Trace Metrics Header -->
+            <div style="display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid rgba(255,255,255,0.08); padding-bottom: 8px;">
+              <div style="display: flex; gap: 6px;">
+                <button type="button" class="btn btn-xs btn-outline active" id="btn-pi-view-trace" onclick="setPiView('trace')">📊 Visual Execution Trace</button>
+                <button type="button" class="btn btn-xs btn-outline" id="btn-pi-view-raw" onclick="setPiView('raw')">📜 Raw Stream Log</button>
+              </div>
+              <div id="pi-execution-metrics" style="font-size: 0.78rem; color: var(--text-muted); display: none;">
+                <span id="pi-metric-steps">0 steps</span> • <span id="pi-metric-tools">0 tools</span> • <span id="pi-metric-status" class="badge badge-green">Ready</span>
+              </div>
+            </div>
+
+            <!-- Output Container (Supports Visual Trace & Raw Stream) -->
+            <div style="background: rgba(0,0,0,0.35); border: 1px solid rgba(255,255,255,0.08); border-radius: 6px; padding: 14px; min-height: 140px; max-height: 420px; overflow-y: auto;" id="pi-output-container">
+              <!-- Visual Trace Timeline -->
+              <div id="pi-trace-timeline" class="pi-timeline">
+                <div class="pi-timeline-empty" style="color: var(--text-muted); font-size: 0.85rem; padding: 12px 6px;">
+                  Pi Agent is idle. Enter a prompt above to watch the multi-turn ReAct reasoning loop, tool calls, and observations visually render here.
+                </div>
+              </div>
+              <!-- Raw Stream Monospace Box -->
+              <div id="pi-raw-stream" style="display: none; font-family: monospace; font-size: 0.85rem; white-space: pre-wrap;"></div>
             </div>
           </div>
         </div>

@@ -1284,6 +1284,45 @@ async function fetchPiStatus() {
 
 let piEventPollTimer = null;
 let lastPiEventId = 0;
+let currentPiView = "trace";
+let piTraceStepCount = 0;
+let piTraceToolCount = 0;
+let lastTraceNodeType = null;
+let lastTraceNodeBody = null;
+
+function setPiView(view) {
+  currentPiView = view;
+  const btnTrace = document.getElementById("btn-pi-view-trace");
+  const btnRaw = document.getElementById("btn-pi-view-raw");
+  const timeline = document.getElementById("pi-trace-timeline");
+  const raw = document.getElementById("pi-raw-stream");
+
+  if (view === "trace") {
+    if (btnTrace) btnTrace.classList.add("active");
+    if (btnRaw) btnRaw.classList.remove("active");
+    if (timeline) timeline.style.display = "flex";
+    if (raw) raw.style.display = "none";
+  } else {
+    if (btnTrace) btnTrace.classList.remove("active");
+    if (btnRaw) btnRaw.classList.add("active");
+    if (timeline) timeline.style.display = "none";
+    if (raw) raw.style.display = "block";
+  }
+}
+
+function updatePiMetrics(statusText, isRunning = true) {
+  const bar = document.getElementById("pi-execution-metrics");
+  if (bar) bar.style.display = "flex";
+  const st = document.getElementById("pi-metric-steps");
+  if (st) st.innerText = `${piTraceStepCount} steps`;
+  const tl = document.getElementById("pi-metric-tools");
+  if (tl) tl.innerText = `${piTraceToolCount} tools`;
+  const badge = document.getElementById("pi-metric-status");
+  if (badge) {
+    badge.className = isRunning ? "badge badge-yellow" : "badge badge-green";
+    badge.innerText = statusText;
+  }
+}
 
 async function pollPiEvents() {
   try {
@@ -1292,31 +1331,152 @@ async function pollPiEvents() {
     const data = await res.json();
     if (data.events && data.events.length > 0) {
       lastPiEventId = data.last_id;
+      const timeline = document.getElementById("pi-trace-timeline");
+      const rawStream = document.getElementById("pi-raw-stream");
       const container = document.getElementById("pi-output-container");
-      if (!container) return;
+
+      const emptyPlaceholder = timeline ? timeline.querySelector(".pi-timeline-empty") : null;
+      if (emptyPlaceholder) emptyPlaceholder.remove();
 
       data.events.forEach(evt => {
-        const div = document.createElement("div");
-        div.style.marginBottom = "4px";
-        if (evt.type === "thinking_delta") {
-          div.style.color = "var(--text-muted)";
-          div.innerHTML = `<em>🤔 [Pi Thought] ${escapeHtml(evt.content)}</em>`;
-        } else if (evt.type === "tool_start") {
-          div.style.color = "var(--primary)";
-          div.innerHTML = `<strong>⚡ [Tool Call: ${escapeHtml(evt.tool)}]</strong> <span style="font-size:0.8rem;">args: ${escapeHtml(JSON.stringify(evt.arguments || {}))}</span>`;
-        } else if (evt.type === "tool_end") {
-          div.style.color = evt.success ? "var(--success, #10b981)" : "var(--danger, #ef4444)";
-          div.innerHTML = `<span>↳ [Tool Result: ${evt.success ? 'Success' : 'Failed'}] ${escapeHtml(evt.preview || '')}</span>`;
-        } else if (evt.type === "message_delta") {
-          div.style.color = "var(--text)";
-          div.style.marginTop = "8px";
-          div.innerHTML = `<strong>💡 [Pi Response]:</strong><br><div style="white-space:pre-wrap; margin-top:4px;">${escapeHtml(evt.content)}</div>`;
+        // 1. Raw Stream Log
+        if (rawStream) {
+          const rawDiv = document.createElement("div");
+          rawDiv.style.marginBottom = "3px";
+          if (evt.type === "thinking_delta") {
+            rawDiv.innerHTML = `<span style="color:#94a3b8;">🤔 [Thought]</span> ${escapeHtml(evt.content)}`;
+          } else if (evt.type === "tool_start") {
+            rawDiv.innerHTML = `<span style="color:#38bdf8;">🛠️ [Tool Start: ${escapeHtml(evt.tool)}]</span> <code>${escapeHtml(JSON.stringify(evt.arguments || {}))}</code>`;
+          } else if (evt.type === "tool_end") {
+            rawDiv.innerHTML = `<span style="color:${evt.success ? '#34d399' : '#f87171'};">↳ [Tool End: ${evt.success ? 'OK' : 'Error'}]</span> ${escapeHtml(evt.preview || '')}`;
+          } else if (evt.type === "message_delta") {
+            rawDiv.innerHTML = `<span style="color:#fbbf24;">💡 [Solution]</span> ${escapeHtml(evt.content)}`;
+          }
+          if (rawDiv.innerHTML) rawStream.appendChild(rawDiv);
         }
-        if (div.innerHTML) {
-          container.appendChild(div);
-          container.scrollTop = container.scrollHeight;
+
+        // 2. Visual Trace Timeline Graph
+        if (timeline) {
+          if (evt.type === "thinking_delta") {
+            if (lastTraceNodeType === "thought" && lastTraceNodeBody) {
+              lastTraceNodeBody.textContent += evt.content;
+            } else {
+              piTraceStepCount++;
+              lastTraceNodeType = "thought";
+
+              if (timeline.children.length > 0) {
+                const conn = document.createElement("div");
+                conn.className = "trace-connector";
+                timeline.appendChild(conn);
+              }
+
+              const node = document.createElement("div");
+              node.className = "trace-node thought";
+              node.innerHTML = `
+                <div class="trace-node-header" onclick="this.nextElementSibling.style.display = this.nextElementSibling.style.display === 'none' ? 'block' : 'none'">
+                  <div class="trace-node-title">
+                    <span>🧠</span>
+                    <span>Step ${piTraceStepCount}: ReAct Reasoning & Plan</span>
+                  </div>
+                  <span class="trace-pill pill-thought">Thought</span>
+                </div>
+                <div class="trace-node-body"></div>
+              `;
+              lastTraceNodeBody = node.querySelector(".trace-node-body");
+              lastTraceNodeBody.textContent = evt.content;
+              timeline.appendChild(node);
+            }
+          } else if (evt.type === "tool_start") {
+            piTraceStepCount++;
+            piTraceToolCount++;
+            lastTraceNodeType = "tool";
+
+            if (timeline.children.length > 0) {
+              const conn = document.createElement("div");
+              conn.className = "trace-connector";
+              timeline.appendChild(conn);
+            }
+
+            const node = document.createElement("div");
+            node.className = "trace-node tool";
+            const formattedArgs = JSON.stringify(evt.arguments || {}, null, 2);
+            node.innerHTML = `
+              <div class="trace-node-header" onclick="this.nextElementSibling.style.display = this.nextElementSibling.style.display === 'none' ? 'block' : 'none'">
+                <div class="trace-node-title">
+                  <span>🛠️</span>
+                  <span>Step ${piTraceStepCount}: Tool Call <code>${escapeHtml(evt.tool)}</code></span>
+                </div>
+                <span class="trace-pill pill-tool">Invoking</span>
+              </div>
+              <div class="trace-node-body">
+                <div style="color:var(--text-muted); font-size:0.75rem; margin-bottom:4px;">ARGUMENTS:</div>
+                <pre style="margin:0; font-size:0.8rem; background:rgba(0,0,0,0.3); padding:6px; border-radius:4px;">${escapeHtml(formattedArgs)}</pre>
+              </div>
+            `;
+            timeline.appendChild(node);
+            lastTraceNodeBody = null;
+          } else if (evt.type === "tool_end") {
+            piTraceStepCount++;
+            lastTraceNodeType = "observation";
+
+            if (timeline.children.length > 0) {
+              const conn = document.createElement("div");
+              conn.className = "trace-connector";
+              timeline.appendChild(conn);
+            }
+
+            const node = document.createElement("div");
+            node.className = `trace-node observation ${evt.success ? '' : 'error'}`;
+            node.innerHTML = `
+              <div class="trace-node-header" onclick="this.nextElementSibling.style.display = this.nextElementSibling.style.display === 'none' ? 'block' : 'none'">
+                <div class="trace-node-title">
+                  <span>👁️</span>
+                  <span>Step ${piTraceStepCount}: Observation (${escapeHtml(evt.tool)})</span>
+                </div>
+                <span class="trace-pill pill-obs" style="${evt.success ? '' : 'background:rgba(239,68,68,0.2);color:#fca5a5;border-color:rgba(239,68,68,0.4);'}">${evt.success ? 'Success' : 'Failed'}</span>
+              </div>
+              <div class="trace-node-body">
+                <div style="color:var(--text-muted); font-size:0.75rem; margin-bottom:4px;">OBSERVATION RESULT:</div>
+                <pre style="margin:0; font-size:0.8rem; background:rgba(0,0,0,0.3); padding:6px; border-radius:4px;">${escapeHtml(evt.preview || '(empty observation)')}</pre>
+              </div>
+            `;
+            timeline.appendChild(node);
+            lastTraceNodeBody = null;
+          } else if (evt.type === "message_delta") {
+            if (lastTraceNodeType === "answer" && lastTraceNodeBody) {
+              lastTraceNodeBody.textContent += evt.content;
+            } else {
+              piTraceStepCount++;
+              lastTraceNodeType = "answer";
+
+              if (timeline.children.length > 0) {
+                const conn = document.createElement("div");
+                conn.className = "trace-connector";
+                timeline.appendChild(conn);
+              }
+
+              const node = document.createElement("div");
+              node.className = "trace-node answer";
+              node.innerHTML = `
+                <div class="trace-node-header" onclick="this.nextElementSibling.style.display = this.nextElementSibling.style.display === 'none' ? 'block' : 'none'">
+                  <div class="trace-node-title">
+                    <span>💡</span>
+                    <span>Step ${piTraceStepCount}: Synthesized Solution</span>
+                  </div>
+                  <span class="trace-pill pill-answer">Answer</span>
+                </div>
+                <div class="trace-node-body" style="font-size:0.9rem; line-height:1.6;"></div>
+              `;
+              lastTraceNodeBody = node.querySelector(".trace-node-body");
+              lastTraceNodeBody.textContent = evt.content;
+              timeline.appendChild(node);
+            }
+          }
         }
       });
+
+      updatePiMetrics("Executing...", true);
+      if (container) container.scrollTop = container.scrollHeight;
     }
   } catch (e) {
     console.warn("pollPiEvents error:", e);
@@ -1328,7 +1488,8 @@ async function runPiGoal() {
   const modelSelect = document.getElementById("select-pi-model");
   const btn = document.getElementById("btn-run-pi-goal");
   const progressBar = document.getElementById("pi-progress-bar");
-  const container = document.getElementById("pi-output-container");
+  const timeline = document.getElementById("pi-trace-timeline");
+  const rawStream = document.getElementById("pi-raw-stream");
 
   const prompt = (input ? input.value : "").trim();
   if (!prompt) {
@@ -1343,13 +1504,35 @@ async function runPiGoal() {
     btn.innerText = "⏳ Executing...";
   }
   if (progressBar) progressBar.style.display = "block";
-  if (container) {
-    container.innerHTML = `<div style="color: var(--accent);">🚀 Launching goal: "${escapeHtml(prompt)}"...</div>`;
+
+  // Reset trace metrics and DOM
+  piTraceStepCount = 0;
+  piTraceToolCount = 0;
+  lastTraceNodeType = null;
+  lastTraceNodeBody = null;
+
+  if (timeline) {
+    timeline.innerHTML = `
+      <div class="trace-node" style="border-left: 3px solid var(--accent); background: rgba(59, 130, 246, 0.1);">
+        <div class="trace-node-header">
+          <div class="trace-node-title">
+            <span>🎯</span>
+            <strong>Target Goal:</strong> <span style="font-weight: normal;">${escapeHtml(prompt)}</span>
+          </div>
+          <span class="badge badge-purple">${escapeHtml(model)}</span>
+        </div>
+      </div>
+    `;
   }
+  if (rawStream) {
+    rawStream.innerHTML = `<div style="color: var(--accent);">🚀 Goal started: "${escapeHtml(prompt)}" (model: ${escapeHtml(model)})</div>`;
+  }
+
+  updatePiMetrics("Executing...", true);
 
   // Start polling events
   if (piEventPollTimer) clearInterval(piEventPollTimer);
-  piEventPollTimer = setInterval(pollPiEvents, 300);
+  piEventPollTimer = setInterval(pollPiEvents, 250);
 
   try {
     const res = await fetch("/api/pi/goal", {
@@ -1360,11 +1543,14 @@ async function runPiGoal() {
     const data = await res.json();
     if (res.ok) {
       showToast("Pi Agent completed goal!");
+      updatePiMetrics("Goal Completed", false);
     } else {
       showToast(data.error || "Goal execution failed", true);
+      updatePiMetrics("Goal Failed", false);
     }
   } catch (e) {
     showToast(`Execution error: ${e}`, true);
+    updatePiMetrics("Error", false);
   } finally {
     setTimeout(() => {
       pollPiEvents();
@@ -1374,8 +1560,9 @@ async function runPiGoal() {
         btn.disabled = false;
         btn.innerText = "⚡ Execute Goal";
       }
-    }, 1000);
+    }, 800);
   }
+}
 // Onboarding / Quickstart Wizard Controller
 let selectedWizardMode = "offline-only";
 let currentWizardStep = 1;

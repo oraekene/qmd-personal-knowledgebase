@@ -623,4 +623,114 @@ body {
   background: rgba(59, 130, 246, 0.12);
 }
 
+/* Visual Execution Trace Timeline */
+.pi-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  position: relative;
+}
+
+.trace-node {
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  transition: all 0.2s ease;
+}
+
+.trace-node:hover {
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.trace-node.thought {
+  border-left: 3px solid #8b5cf6;
+}
+
+.trace-node.tool {
+  border-left: 3px solid #3b82f6;
+}
+
+.trace-node.observation {
+  border-left: 3px solid #10b981;
+}
+
+.trace-node.observation.error {
+  border-left: 3px solid #ef4444;
+}
+
+.trace-node.answer {
+  border-left: 3px solid #f59e0b;
+  background: rgba(245, 158, 11, 0.05);
+}
+
+.trace-node-header {
+  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  user-select: none;
+  font-size: 0.85rem;
+}
+
+.trace-node-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+
+.trace-node-body {
+  padding: 8px 12px 10px 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.trace-pill {
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.pill-thought {
+  background: rgba(139, 92, 246, 0.2);
+  color: #c4b5fd;
+  border: 1px solid rgba(139, 92, 246, 0.4);
+}
+
+.pill-tool {
+  background: rgba(59, 130, 246, 0.2);
+  color: #93c5fd;
+  border: 1px solid rgba(59, 130, 246, 0.4);
+}
+
+.pill-obs {
+  background: rgba(16, 185, 129, 0.2);
+  color: #6ee7b7;
+  border: 1px solid rgba(16, 185, 129, 0.4);
+}
+
+.pill-answer {
+  background: rgba(245, 158, 11, 0.2);
+  color: #fcd34d;
+  border: 1px solid rgba(245, 158, 11, 0.4);
+}
+
+.trace-connector {
+  width: 2px;
+  height: 10px;
+  background: rgba(255, 255, 255, 0.15);
+  margin-left: 20px;
+}
+
+
 
