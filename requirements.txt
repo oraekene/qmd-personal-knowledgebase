@@ -1,0 +1,11 @@
+# Core Knowledgebase & Search Engine Requirements
+pyyaml>=6.0
+pytest>=8.0.0
+
+# Optional Desktop & Native App Window
+# pywebview>=5.0.0; sys_platform == 'win32' or sys_platform == 'darwin' or sys_platform == 'linux'
+
+# Optional Cloud Integrations
+boto3>=1.34.0
+modal>=0.63.0
+e2b>=0.17.0
