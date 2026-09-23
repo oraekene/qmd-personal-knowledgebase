@@ -110,7 +110,7 @@ def _http_request(url: str, method: str = "GET", data: dict | None = None, heade
 
     req = urllib.request.Request(url, data=req_body, headers=req_headers, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with urllib.request.urlopen(req, timeout=10) as resp:
             content = resp.read().decode("utf-8")
             return resp.status, json.loads(content) if content else {}
     except urllib.error.HTTPError as e:

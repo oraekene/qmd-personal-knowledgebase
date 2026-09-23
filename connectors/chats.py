@@ -17,6 +17,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
+from connectors.sdk.archive import (
+    DecompressionBombError,
+    UnsafeArchiveError,
+    safe_read_zip_entry,
+    validate_zip_archive,
+)
 from connectors.sdk.base import SourcePlugin, UnitPayload
 
 # Supported platforms — per spec.md:109 + #9 Silos
@@ -102,13 +108,18 @@ class ChatsConnector(SourcePlugin):
             zip_platform = _platform_from_zip_name(zip_path.name)
             try:
                 with zipfile.ZipFile(zip_path, "r") as zf:
+                    try:
+                        validate_zip_archive(zf)
+                    except (DecompressionBombError, UnsafeArchiveError):
+                        continue
+
                     for info in zf.infolist():
                         if info.is_dir() or not info.filename.lower().endswith(".json"):
                             continue
                         if count >= limit:
                             break
                         try:
-                            raw_bytes = zf.read(info.filename)
+                            raw_bytes = safe_read_zip_entry(zf, info)
                             parsed_data = json.loads(raw_bytes.decode("utf-8", errors="ignore"))
                         except Exception:
                             continue
@@ -190,7 +201,7 @@ class ChatsConnector(SourcePlugin):
                             )
                             count += 1
                             yield payload
-            except zipfile.BadZipFile:
+            except (zipfile.BadZipFile, DecompressionBombError, UnsafeArchiveError, EOFError, OSError):
                 continue
             except Exception:
                 continue

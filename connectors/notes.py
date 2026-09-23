@@ -21,6 +21,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
+from connectors.sdk.archive import (
+    DecompressionBombError,
+    UnsafeArchiveError,
+    safe_read_zip_entry,
+    validate_zip_archive,
+)
 from connectors.sdk.base import SourcePlugin, UnitPayload
 
 
@@ -244,6 +250,11 @@ class NotesConnector(SourcePlugin):
         """Extract Simplenote or Keep notes from a ZIP archive."""
         try:
             with zipfile.ZipFile(zip_path, "r") as zf:
+                try:
+                    validate_zip_archive(zf)
+                except (DecompressionBombError, UnsafeArchiveError) as ex:
+                    return
+
                 namelist = zf.namelist()
 
                 # Check for Simplenote JSON (source/notes.json or notes.json)
@@ -251,7 +262,8 @@ class NotesConnector(SourcePlugin):
                 if json_candidates:
                     target_json = json_candidates[0]
                     try:
-                        yield from self._process_simplenote_json(zf.read(target_json), since)
+                        raw_json = safe_read_zip_entry(zf, target_json)
+                        yield from self._process_simplenote_json(raw_json, since)
                         return
                     except Exception:
                         pass
@@ -267,7 +279,8 @@ class NotesConnector(SourcePlugin):
                     stem = Path(info.filename).stem
 
                     try:
-                        content = zf.read(info.filename).decode("utf-8", errors="replace")
+                        content_bytes = safe_read_zip_entry(zf, info)
+                        content = content_bytes.decode("utf-8", errors="replace")
                         if not content.strip():
                             continue
 
@@ -297,5 +310,7 @@ class NotesConnector(SourcePlugin):
                         )
                     except Exception:
                         continue
+        except (zipfile.BadZipFile, DecompressionBombError, UnsafeArchiveError, EOFError, OSError):
+            return
         except Exception:
             return

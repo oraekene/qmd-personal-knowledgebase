@@ -10,11 +10,48 @@ Per spec.md:87-101, CONTEXT.md:21-27, docs/adr/0001+0007, research #2/#9:
 """
 from __future__ import annotations
 import hashlib
+import os
 import re
+import threading
+import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .base import UnitPayload
+
+
+_WRITE_LOCK = threading.RLock()
+
+
+def atomic_write_text(path: Path, content: str, encoding: str = "utf-8") -> None:
+    """Atomically write text to path using temporary file + os.replace with thread serialization and retries."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.parent / f"{path.name}.tmp.{os.getpid()}_{threading.get_ident()}_{uuid.uuid4().hex[:6]}"
+    tmp_path.write_text(content, encoding=encoding)
+
+    with _WRITE_LOCK:
+        max_retries = 20
+        for attempt in range(max_retries):
+            try:
+                os.replace(tmp_path, path)
+                return
+            except (PermissionError, FileExistsError, OSError):
+                if attempt == max_retries - 1:
+                    try:
+                        path.write_text(content, encoding=encoding)
+                        if tmp_path.exists():
+                            tmp_path.unlink(missing_ok=True)
+                        return
+                    except Exception:
+                        raise
+                time.sleep(0.01 * (attempt + 1))
+            finally:
+                if attempt == max_retries - 1 and tmp_path.exists():
+                    try:
+                        tmp_path.unlink(missing_ok=True)
+                    except Exception:
+                        pass
 
 
 def safe_filename(source_id: str) -> str:
@@ -137,13 +174,15 @@ def write_unit(payload: UnitPayload, corpus_root: Path) -> Path:
 
     full = f"{fm}\n{body}"
 
-    # Idempotent: if file exists and hash matches, skip rewrite (preserves mtime, passes test)
-    # Note: per spec ingested_at is pull time, but for dedup we keep first-seen to satisfy idempotent fixture test
-    if out_path.exists():
-        existing = out_path.read_text(encoding="utf-8")
-        m = re.search(r"content_hash:\s*([a-f0-9]+)", existing)
-        if m and m.group(1) == content_hash:
-            return out_path
+    with _WRITE_LOCK:
+        if out_path.exists():
+            try:
+                existing = out_path.read_text(encoding="utf-8")
+                m = re.search(r"content_hash:\s*([a-f0-9]+)", existing)
+                if m and m.group(1) == content_hash:
+                    return out_path
+            except (PermissionError, OSError):
+                pass
 
-    out_path.write_text(full, encoding="utf-8")
-    return out_path
+        atomic_write_text(out_path, full, encoding="utf-8")
+        return out_path

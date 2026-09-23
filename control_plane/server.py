@@ -40,6 +40,12 @@ if str(REPO_ROOT) not in sys.path:
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 ENV_PATH = REPO_ROOT / ".env"
 
+from connectors.sdk.archive import (
+    DecompressionBombError,
+    UnsafeArchiveError,
+    validate_zip_archive,
+)
+
 
 
 def check_port_listening(host: str, port: int, timeout: float = 1.0) -> bool:
@@ -56,7 +62,7 @@ def check_port_listening(host: str, port: int, timeout: float = 1.0) -> bool:
     return False
 
 
-def check_http_url(url: str, timeout: float = 1.5) -> bool:
+def check_http_url(url: str, timeout: float = 0.8) -> bool:
     """Check if an HTTP/HTTPS URL returns an OK status."""
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "Claude/1.0"})
@@ -623,14 +629,44 @@ def make_control_plane_handler(
                 system_logger.log("HTTP", msg, level="INFO")
 
 
+        def handle(self) -> None:
+            try:
+                super().handle()
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, socket.timeout, TimeoutError):
+                pass
+            except OSError as e:
+                if getattr(e, "winerror", None) in (10054, 10053) or getattr(e, "errno", None) in (32, 104):
+                    pass
+                else:
+                    raise
+
+        def handle_one_request(self) -> None:
+            try:
+                super().handle_one_request()
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, socket.timeout, TimeoutError):
+                pass
+            except OSError as e:
+                if getattr(e, "winerror", None) in (10054, 10053) or getattr(e, "errno", None) in (32, 104):
+                    pass
+                else:
+                    raise
+
         def send_json(self, status: int, data: Dict[str, Any]) -> None:
-            body = json.dumps(data).encode("utf-8")
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.end_headers()
-            self.wfile.write(body)
+            try:
+                body = json.dumps(data).encode("utf-8")
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, socket.error):
+                pass
+            except OSError as e:
+                if getattr(e, "winerror", None) in (10054, 10053) or getattr(e, "errno", None) in (32, 104):
+                    pass
+                else:
+                    raise
 
         def do_OPTIONS(self) -> None:
             self.send_response(HTTPStatus.NO_CONTENT)
@@ -652,11 +688,11 @@ def make_control_plane_handler(
 
                 qmd_ok = check_port_listening("127.0.0.1", 8181)
                 proxy_ok = check_port_listening("127.0.0.1", 3210)
-                tunnel_ok = check_http_url("https://kb.parmeterai.space/.well-known/oauth-authorization-server")
+                tunnel_ok = check_http_url("https://kb.parmeterai.space/.well-known/oauth-authorization-server", timeout=0.3)
 
                 mirror_token = env_dict.get("MIRROR_TOKEN", "")
                 mirror_probe_url = f"{mirror_host}/llms.txt"
-                mirror_ok = check_http_url(mirror_probe_url)
+                mirror_ok = check_http_url(mirror_probe_url, timeout=0.3)
                 mirror_user_url = f"{mirror_host}/{mirror_token}/" if mirror_token else mirror_host
 
                 corpus_stats = get_corpus_stats(repo_root / "corpus")
@@ -1225,6 +1261,11 @@ def make_control_plane_handler(
                 return
 
             if path == "/api/upload":
+                # Maximum payload size enforcement (100MB)
+                if len(body) > 100 * 1024 * 1024:
+                    self.send_json(413, {"error": "Payload Too Large: maximum allowed upload is 100MB"})
+                    return
+
                 filename = self.headers.get("X-Filename") or parsed.query.replace("filename=", "")
                 if not filename:
                     cd = self.headers.get("Content-Disposition", "")
@@ -1236,6 +1277,7 @@ def make_control_plane_handler(
                     filename = f"upload_{int(time.time())}.bin"
 
                 filename = os.path.basename(filename).strip()
+                filename = re.sub(r'[:*?"<>|/\\]', '_', filename)
                 lower = filename.lower()
                 is_chat = False
                 is_notes = False
@@ -1243,11 +1285,17 @@ def make_control_plane_handler(
                 if lower.endswith(".zip"):
                     try:
                         with zipfile.ZipFile(io.BytesIO(body), "r") as zf:
+                            validate_zip_archive(zf)
                             names = [n.lower() for n in zf.namelist()]
                             if any("conversations.json" in n or "chat.html" in n or "conversations/" in n for n in names):
                                 is_chat = True
                             elif any("notes.json" in n or n.startswith("notes/") or "takeout/keep/" in n for n in names):
                                 is_notes = True
+                    except (DecompressionBombError, UnsafeArchiveError) as ex:
+                        system_logger.log("SECURITY", f"Rejected malicious archive upload '{filename}': {ex}", level="WARNING")
+                        system_logger.log_user_action("MALICIOUS_UPLOAD_BLOCKED", {"filename": filename, "reason": str(ex)}, level="WARNING")
+                        self.send_json(400, {"error": f"Security validation failed: {ex}"})
+                        return
                     except Exception:
                         pass
 

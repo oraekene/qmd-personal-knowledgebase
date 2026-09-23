@@ -260,19 +260,20 @@ class SchedulerStore:
 
     def __init__(self, file_path: Path | None = None) -> None:
         self.file_path = Path(file_path) if file_path else AUTOMATIONS_FILE
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._ensure_init()
 
     def _ensure_init(self) -> None:
-        if not self.file_path.exists():
-            now_dt = datetime.datetime.now(datetime.timezone.utc)
-            initial = []
-            for item in DEFAULT_JOBS:
-                job = AutomationJob.from_dict(item)
-                job.next_run_at = compute_next_run(job.schedule, now_dt).isoformat()
-                initial.append(job.to_dict())
-            self.file_path.parent.mkdir(parents=True, exist_ok=True)
-            self.file_path.write_text(json.dumps({"automations": initial}, indent=2), encoding="utf-8")
+        with self._lock:
+            if not self.file_path.exists():
+                now_dt = datetime.datetime.now(datetime.timezone.utc)
+                initial = []
+                for item in DEFAULT_JOBS:
+                    job = AutomationJob.from_dict(item)
+                    job.next_run_at = compute_next_run(job.schedule, now_dt).isoformat()
+                    initial.append(job)
+                self.file_path.parent.mkdir(parents=True, exist_ok=True)
+                self._save_unlocked(initial)
 
     def load_jobs(self) -> List[AutomationJob]:
         with self._lock:
@@ -284,7 +285,7 @@ class SchedulerStore:
                 now_dt = datetime.datetime.now(datetime.timezone.utc)
                 for j in jobs:
                     if not j.next_run_at and j.enabled:
-                        j.next_run_at = compute_next_run(j.schedule, now_dt).isoformat()
+                        j.next_run_at = compute_next_run(job.schedule if 'job' in locals() else j.schedule, now_dt).isoformat()
                         dirty = True
                 if dirty:
                     self._save_unlocked(jobs)
@@ -299,32 +300,58 @@ class SchedulerStore:
 
     def _save_unlocked(self, jobs: List[AutomationJob]) -> None:
         data = {"automations": [j.to_dict() for j in jobs]}
-        self.file_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        serialized = json.dumps(data, indent=2)
+        tmp_file = self.file_path.parent / f"{self.file_path.name}.tmp.{os.getpid()}_{threading.get_ident()}_{uuid.uuid4().hex[:6]}"
+        tmp_file.write_text(serialized, encoding="utf-8")
+        max_retries = 10
+        for attempt in range(max_retries):
+            try:
+                os.replace(tmp_file, self.file_path)
+                return
+            except (PermissionError, FileExistsError, OSError):
+                if attempt == max_retries - 1:
+                    try:
+                        self.file_path.write_text(serialized, encoding="utf-8")
+                        if tmp_file.exists():
+                            tmp_file.unlink(missing_ok=True)
+                        return
+                    except Exception:
+                        raise
+                time.sleep(0.01 * (attempt + 1))
+            finally:
+                if attempt == max_retries - 1 and tmp_file.exists():
+                    try:
+                        tmp_file.unlink(missing_ok=True)
+                    except Exception:
+                        pass
 
     def get_job(self, job_id: str) -> Optional[AutomationJob]:
-        jobs = self.load_jobs()
-        for j in jobs:
-            if j.id == job_id:
-                return j
-        return None
+        with self._lock:
+            jobs = self.load_jobs()
+            for j in jobs:
+                if j.id == job_id:
+                    return j
+            return None
 
     def upsert_job(self, job: AutomationJob) -> None:
-        jobs = self.load_jobs()
-        idx = next((i for i, j in enumerate(jobs) if j.id == job.id), None)
-        if idx is not None:
-            jobs[idx] = job
-        else:
-            jobs.append(job)
-        self.save_jobs(jobs)
+        with self._lock:
+            jobs = self.load_jobs()
+            idx = next((i for i, j in enumerate(jobs) if j.id == job.id), None)
+            if idx is not None:
+                jobs[idx] = job
+            else:
+                jobs.append(job)
+            self._save_unlocked(jobs)
 
     def delete_job(self, job_id: str) -> bool:
-        jobs = self.load_jobs()
-        orig_len = len(jobs)
-        jobs = [j for j in jobs if j.id != job_id]
-        if len(jobs) != orig_len:
-            self.save_jobs(jobs)
-            return True
-        return False
+        with self._lock:
+            jobs = self.load_jobs()
+            orig_len = len(jobs)
+            jobs = [j for j in jobs if j.id != job_id]
+            if len(jobs) != orig_len:
+                self._save_unlocked(jobs)
+                return True
+            return False
 
 
 # ----------------------------------------------------------------------

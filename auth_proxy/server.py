@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import socket
 import sys
 import urllib.error
 import urllib.request
@@ -85,6 +86,28 @@ def make_handler(token: str, target: str) -> type[BaseHTTPRequestHandler]:
         # class vars for introspection/tests
         expected_token: ClassVar[str] = token
         upstream_target: ClassVar[str] = target
+
+        def handle(self) -> None:
+            try:
+                super().handle()
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, socket.timeout, TimeoutError):
+                pass
+            except OSError as e:
+                if getattr(e, "winerror", None) in (10054, 10053) or getattr(e, "errno", None) in (32, 104):
+                    pass
+                else:
+                    raise
+
+        def handle_one_request(self) -> None:
+            try:
+                super().handle_one_request()
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, socket.timeout, TimeoutError):
+                pass
+            except OSError as e:
+                if getattr(e, "winerror", None) in (10054, 10053) or getattr(e, "errno", None) in (32, 104):
+                    pass
+                else:
+                    raise
 
         def _proxy_request(self) -> None:
             length = int(self.headers.get("Content-Length", 0))
@@ -347,15 +370,24 @@ def make_handler(token: str, target: str) -> type[BaseHTTPRequestHandler]:
                 self.end_headers()
                 self.wfile.write(err_body)
                 print(f"[AUTH_PROXY] Upstream {e.code} for {self.command} {self.path}", flush=True)
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, socket.error):
+                return
+            except OSError as e:
+                if getattr(e, "winerror", None) in (10054, 10053) or getattr(e, "errno", None) in (32, 104):
+                    return
+                raise
             except Exception as e:
                 logger.exception("Proxy upstream forwarding error")
-                err_bytes = json.dumps({"error": f"Bad Gateway: {e}"}).encode("utf-8")
-                self.send_response(502)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(err_bytes)))
-                self.end_headers()
-                self.wfile.write(err_bytes)
-                print(f"[AUTH_PROXY] 502 Bad Gateway for {self.command} {self.path}: {e}", flush=True)
+                try:
+                    err_bytes = json.dumps({"error": f"Bad Gateway: {e}"}).encode("utf-8")
+                    self.send_response(502)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(err_bytes)))
+                    self.end_headers()
+                    self.wfile.write(err_bytes)
+                    print(f"[AUTH_PROXY] 502 Bad Gateway for {self.command} {self.path}: {e}", flush=True)
+                except Exception:
+                    pass
 
         # Verb-preserving: each HTTP verb delegates to _proxy_request
         def do_GET(self) -> None:  # noqa: N802

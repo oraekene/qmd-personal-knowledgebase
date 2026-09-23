@@ -16,12 +16,15 @@ import os
 import pathlib
 import re
 import shutil
+import threading
+import time
+import uuid
 from typing import List
 
 from scripts import is_excluded
 
-
 _TOKEN_HEX_RE = re.compile(r"^[0-9a-fA-F]+$")
+_MIRROR_LOCK = threading.Lock()
 
 
 class MirrorToken(str):
@@ -139,19 +142,36 @@ def _atomic_publish(tmp_dist: pathlib.Path, dist: pathlib.Path) -> None:
     """
     backup_dist: pathlib.Path | None = None
     if dist.exists():
-        backup_dist = dist.with_name(dist.name + ".tmp.backup")
+        backup_dist = dist.with_name(f"{dist.name}.tmp.backup.{os.getpid()}_{threading.get_ident()}_{uuid.uuid4().hex[:6]}")
         if backup_dist.exists():
-            shutil.rmtree(backup_dist)
-        dist.rename(backup_dist)
+            shutil.rmtree(backup_dist, ignore_errors=True)
+        for attempt in range(10):
+            try:
+                dist.rename(backup_dist)
+                break
+            except (PermissionError, OSError):
+                if attempt == 9:
+                    raise
+                time.sleep(0.02 * (attempt + 1))
     try:
-        tmp_dist.rename(dist)
+        for attempt in range(10):
+            try:
+                tmp_dist.rename(dist)
+                break
+            except (PermissionError, OSError):
+                if attempt == 9:
+                    raise
+                time.sleep(0.02 * (attempt + 1))
         if backup_dist and backup_dist.exists():
-            shutil.rmtree(backup_dist)
+            shutil.rmtree(backup_dist, ignore_errors=True)
     except Exception:
         if backup_dist and backup_dist.exists():
             if dist.exists():
-                shutil.rmtree(dist)
-            backup_dist.rename(dist)
+                shutil.rmtree(dist, ignore_errors=True)
+            try:
+                backup_dist.rename(dist)
+            except Exception:
+                pass
         raise
 
 
@@ -173,59 +193,59 @@ def build_mirror(
     MirrorToken(token)
     host = _validate_host(host)
 
-    # Atomic build: write to tmp then swap via backup — avoids losing dist on crash
-    tmp_dist = dist.with_name(dist.name + ".tmp.build")
-    backup_dist: pathlib.Path | None = None
-    if tmp_dist.exists():
-        shutil.rmtree(tmp_dist)
-    tmp_dist.mkdir(parents=True, exist_ok=True)
+    with _MIRROR_LOCK:
+        # Atomic build: write to unique tmp then swap via backup
+        tmp_dist = dist.with_name(f"{dist.name}.tmp.build.{os.getpid()}_{threading.get_ident()}_{uuid.uuid4().hex[:6]}")
+        if tmp_dist.exists():
+            shutil.rmtree(tmp_dist, ignore_errors=True)
+        tmp_dist.mkdir(parents=True, exist_ok=True)
 
-    token_dir = tmp_dist / token
-    token_dir.mkdir(parents=True, exist_ok=True)
+        token_dir = tmp_dist / token
+        token_dir.mkdir(parents=True, exist_ok=True)
 
-    # Collect Units (for llms.txt) — before copy, sorted
-    units = _collect_units(corpus)
+        # Collect Units (for llms.txt) — before copy, sorted
+        units = _collect_units(corpus)
 
-    # Copy corpus tree into tmp_dist/<TOKEN>/ preserving silo structure
-    if corpus.exists():
-        for src in corpus.rglob("*"):
-            if src.is_dir():
-                continue
-            if is_excluded(src):
-                continue
-            try:
-                rel = src.relative_to(corpus)
-            except ValueError:
-                continue
-            dest = token_dir / rel
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dest)
+        # Copy corpus tree into tmp_dist/<TOKEN>/ preserving silo structure
+        if corpus.exists():
+            for src in corpus.rglob("*"):
+                if src.is_dir():
+                    continue
+                if is_excluded(src):
+                    continue
+                try:
+                    rel = src.relative_to(corpus)
+                except ValueError:
+                    continue
+                dest = token_dir / rel
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dest)
 
-    # Generate llms.txt: full tokenized map under token prefix, redacted pointer at root.
-    # Root must never contain the Mirror Token (ADR-0003, issue #22) — it is
-    # served unauthenticated, so tokenized URLs there would leak the secret.
-    wiki_units, other_units = _split_wiki_units(units, corpus)
-    llms_content = _render_llms_content(units, corpus, host, token)
-    root_content = _render_root_content(len(wiki_units), len(other_units))
+        # Generate llms.txt: full tokenized map under token prefix, redacted pointer at root.
+        # Root must never contain the Mirror Token (ADR-0003, issue #22) — it is
+        # served unauthenticated, so tokenized URLs there would leak the secret.
+        wiki_units, other_units = _split_wiki_units(units, corpus)
+        llms_content = _render_llms_content(units, corpus, host, token)
+        root_content = _render_root_content(len(wiki_units), len(other_units))
 
-    (tmp_dist / "llms.txt").write_text(root_content, encoding="utf-8")
-    (token_dir / "llms.txt").write_text(llms_content, encoding="utf-8")
+        (tmp_dist / "llms.txt").write_text(root_content, encoding="utf-8")
+        (token_dir / "llms.txt").write_text(llms_content, encoding="utf-8")
 
-    # 404.html disables SPA fallback — untokenized paths must 404
-    (tmp_dist / "404.html").write_text(
-        "<html><head><title>404 Not Found</title></head><body><h1>404 Not Found</h1><p>Token required.</p></body></html>\n",
-        encoding="utf-8",
-    )
+        # 404.html disables SPA fallback — untokenized paths must 404
+        (tmp_dist / "404.html").write_text(
+            "<html><head><title>404 Not Found</title></head><body><h1>404 Not Found</h1><p>Token required.</p></body></html>\n",
+            encoding="utf-8",
+        )
 
-    # robots.txt — allow llms.txt at root and tokenized (fixes strict crawler blocking)
-    (tmp_dist / "robots.txt").write_text(
-        "User-agent: *\nDisallow: /\nAllow: /llms.txt\nAllow: /" + token + "/llms.txt\nAllow: /" + token + "/*\n",
-        encoding="utf-8",
-    )
+        # robots.txt — allow llms.txt at root and tokenized (fixes strict crawler blocking)
+        (tmp_dist / "robots.txt").write_text(
+            "User-agent: *\nDisallow: /\nAllow: /llms.txt\nAllow: /" + token + "/llms.txt\nAllow: /" + token + "/*\n",
+            encoding="utf-8",
+        )
 
-    # _headers — Cloudflare Pages headers: markdown MIME, noindex, cache
-    # Depth patterns + catch-all for arbitrary depth (fixes Spec wrong: depth 4)
-    headers_content = f"""/llms.txt
+        # _headers — Cloudflare Pages headers: markdown MIME, noindex, cache
+        # Depth patterns + catch-all for arbitrary depth (fixes Spec wrong: depth 4)
+        headers_content = f"""/llms.txt
   Content-Type: text/markdown; charset=utf-8
   X-Robots-Tag: noindex
 /{token}/llms.txt
@@ -262,14 +282,14 @@ def build_mirror(
 /404.html
   Cache-Control: no-store
 """
-    (tmp_dist / "_headers").write_text(headers_content, encoding="utf-8")
+        (tmp_dist / "_headers").write_text(headers_content, encoding="utf-8")
 
-    # _redirects — no SPA; token prefix 200, else 404.html
-    (tmp_dist / "_redirects").write_text(f"/{token}/*  /{token}/:splat  200\n/*  /404.html  404\n", encoding="utf-8")
+        # _redirects — no SPA; token prefix 200, else 404.html
+        (tmp_dist / "_redirects").write_text(f"/{token}/*  /{token}/:splat  200\n/*  /404.html  404\n", encoding="utf-8")
 
-    # Atomic swap via helper (backup old dist, rename tmp, rollback on failure)
-    _atomic_publish(tmp_dist, dist)
-    return dist
+        # Atomic swap via helper (backup old dist, rename tmp, rollback on failure)
+        _atomic_publish(tmp_dist, dist)
+        return dist
 
 
 if __name__ == "__main__":
